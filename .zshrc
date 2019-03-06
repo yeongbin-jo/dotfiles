@@ -103,6 +103,7 @@ export SHELL=/usr/local/bin/zsh
 export EDITOR='vim'
 alias vi="vim"
 set -o vi
+alias dps='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"'
 
 bindkey -v
 bindkey '\e[3~' delete-char
