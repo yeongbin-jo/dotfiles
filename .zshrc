@@ -113,3 +113,4 @@ bindkey '\e[3~' delete-char
 bindkey '^R' history-incremental-search-backward
 set -K
 export KEYTIMEOUT=1
+export PIPENV_VENV_IN_PROJECT=1
