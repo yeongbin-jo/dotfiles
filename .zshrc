@@ -96,6 +96,9 @@ export LANG=ko_KR.UTF-8
 # alias zshconfig="mate ~/.zshrc"
 # alias ohmyzsh="mate ~/.oh-my-zsh"
 
+# brew
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 SEGMENT_SEPARATOR=$'\ue0b0'
 PROMPT='%{$fg[black]%}%{$bg[green]%} %D{%y/%m/%d} %D{%H:%M:%S} %{$fg[green]%}%{$bg[black]%}$SEGMENT_SEPARATOR'$PROMPT
 DISABLE_UPDATE_PROMPT=true
