@@ -61,7 +61,9 @@ ZSH_THEME="agnoster"
 plugins=(
   git
   pipenv
+  autojump
   zsh-autosuggestions
+  zsh-syntax-highlighting
 )
 
 source $ZSH/oh-my-zsh.sh
@@ -114,3 +116,4 @@ bindkey '^R' history-incremental-search-backward
 set -K
 export KEYTIMEOUT=1
 export PIPENV_VENV_IN_PROJECT=1
+export PATH=$PATH:~/.local/bin
