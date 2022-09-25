@@ -1,0 +1,4 @@
+#!/bin/sh
+# Move this script to /usr/local/bin/pycharm with executable perm.
+
+open -na "PyCharm.app" --args "$@"
