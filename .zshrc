@@ -64,6 +64,7 @@ plugins=(
   autojump
   zsh-autosuggestions
   zsh-syntax-highlighting
+  macos
 )
 
 source $ZSH/oh-my-zsh.sh
