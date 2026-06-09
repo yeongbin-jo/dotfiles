@@ -1,0 +1,5 @@
+# showcase / meta files — kept in the repo, never deployed to $HOME
+README.md
+Brewfile
+iterm2.json
+macos.sh

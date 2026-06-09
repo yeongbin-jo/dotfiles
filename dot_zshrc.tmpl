@@ -1,6 +1,6 @@
 # ============================================================
-#  ~/.zshrc  (공통 설정 — dotfiles 레포에서 관리)
-#  민감/머신별 설정은 ~/.zshrc.local (커밋 안 함, 맨 끝에서 source)
+#  ~/.zshrc  —  chezmoi 로 3대 Mac 공통 관리 (source: dot_zshrc.tmpl)
+#  민감/머신별 SSH alias 등은 ~/.zshrc.local (age 암호화, 맨 끝에서 source)
 # ============================================================
 
 # ── oh-my-zsh ──
@@ -10,6 +10,8 @@ plugins=(git)
 
 # Docker CLI 자동완성 fpath: oh-my-zsh 의 compinit 전에 추가 (중복 compinit 방지)
 fpath=("$HOME/.docker/completions" $fpath)
+# sentry-cli 자동완성 (설치된 머신에서만)
+[ -d "$HOME/.local/share/zsh/site-functions" ] && fpath=("$HOME/.local/share/zsh/site-functions" $fpath)
 source "$ZSH/oh-my-zsh.sh"
 
 # ── 기본 환경 ──
@@ -20,7 +22,7 @@ export KEYTIMEOUT=1
 export POETRY_VIRTUALENVS_IN_PROJECT=true
 
 # 프롬프트: agnoster 앞에 날짜/시간 세그먼트 (반드시 oh-my-zsh source 뒤)
-SEGMENT_SEPARATOR=$''
+SEGMENT_SEPARATOR=$'\ue0b0'
 PROMPT='%{$fg[black]%}%{$bg[green]%} %D{%y/%m/%d} %D{%H:%M:%S} %{$fg[green]%}%{$bg[black]%}$SEGMENT_SEPARATOR'$PROMPT
 DISABLE_UPDATE_PROMPT=true
 
@@ -55,6 +57,7 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 # ── 런타임 매니저 (lazy = 셸 시작 빠르게) ──
+{{- if stat (joinPath .chezmoi.homeDir ".nvm") }}
 # nvm: nvm/node/npm/npx/corepack 첫 호출 시에만 로드
 export NVM_DIR="$HOME/.nvm"
 _nvm_lazy() { unset -f nvm node npm npx corepack 2>/dev/null; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"; }
@@ -63,11 +66,19 @@ node()     { _nvm_lazy; node "$@"; }
 npm()      { _nvm_lazy; npm "$@"; }
 npx()      { _nvm_lazy; npx "$@"; }
 corepack() { _nvm_lazy; corepack "$@"; }
+{{- end }}
+{{- if stat (joinPath .chezmoi.homeDir ".pyenv") }}
 
-# pyenv: shims 즉시 PATH(= python/pip/poetry 동작), 무거운 init은 첫 pyenv 호출 시
+# pyenv: shims 즉시 PATH(= python/pip/poetry 동작), 무거운 init 처리
 export PYENV_ROOT="$HOME/.pyenv"
 export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
+{{- if eq .pyenv_init "eager-virtualenv" }}
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+{{- else }}
 pyenv() { unset -f pyenv; eval "$(command pyenv init - zsh)"; pyenv "$@"; }
+{{- end }}
+{{- end }}
 
 # direnv
 eval "$(direnv hook zsh)"
@@ -78,16 +89,22 @@ eval "$(direnv hook zsh)"
 
 # ── 별칭 ──
 alias vi="vim"
-alias dps='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"'
+alias dps='docker ps --format "table {{ `{{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}` }}"'
+alias dip='docker inspect -f "{{ `{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}` }}"'
+alias scrcpy='scrcpy --stay-awake'
 alias claude-yolo='claude --dangerously-skip-permissions'
 alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
 alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
+{{- if eq .machine "m2-air" }}
+alias run=./run
+alias p2r="poetry export --without-hashes --without-urls | awk '{ print $1 }' FS=';' > requirements.txt"
+{{- end }}
 
 # ── nydus: Tailscale 머신의 tmux 세션 attach-or-create (ssh+tmux 터널) ──
 #   nydus / nydus <host>  →  세션 안에서 claude, 빠져나오기 Ctrl-b d
 nydus() { [ -z "$1" ] && tmux new -A -s nydus || ssh -t "$1" 'tmux new -A -s nydus'; }
 
-# ── 머신별/민감 설정 (장비 alias 등, 커밋 안 함) ──
+# ── 머신별/민감 설정 (장비 alias 등, age 암호화) ──
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 
 # ── 모던 CLI 도구 (설치돼 있을 때만 로드 → fresh 머신서도 에러 없음) ──

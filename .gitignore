@@ -1,1 +1,4 @@
+# never commit plaintext secrets or the age key
 .zshrc.local
+key.txt
+*.key

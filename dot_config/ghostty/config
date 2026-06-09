@@ -38,4 +38,4 @@ macos-titlebar-style = tabs
 cursor-style = block
 
 # Ghostty 쉘통합이 프롬프트에서 커서를 바(│)로 바꾸는 동작 끄기 → cursor-style=block 유지
-shell-integration-features = no-cursor
+shell-integration-features = no-cursor,ssh-terminfo
