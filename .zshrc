@@ -1,120 +1,107 @@
-# If you come from bash you might have to change your $PATH.
-# export PATH=$HOME/bin:/usr/local/bin:$PATH
+# ============================================================
+#  ~/.zshrc  (공통 설정 — dotfiles 레포에서 관리)
+#  민감/머신별 설정은 ~/.zshrc.local (커밋 안 함, 맨 끝에서 source)
+# ============================================================
 
-# Path to your oh-my-zsh installation.
-export ZSH=$HOME/.oh-my-zsh
-
-# Set name of the theme to load. Optionally, if you set this to "random"
-# it'll load a random theme each time that oh-my-zsh is loaded.
-# See https://github.com/robbyrussell/oh-my-zsh/wiki/Themes
+# ── oh-my-zsh ──
+export ZSH="$HOME/.oh-my-zsh"
 ZSH_THEME="agnoster"
+plugins=(git)
 
-# Set list of themes to load
-# Setting this variable when ZSH_THEME=random
-# cause zsh load theme from this variable instead of
-# looking in ~/.oh-my-zsh/themes/
-# An empty array have no effect
-# ZSH_THEME_RANDOM_CANDIDATES=( "robbyrussell" "agnoster" )
+# Docker CLI 자동완성 fpath: oh-my-zsh 의 compinit 전에 추가 (중복 compinit 방지)
+fpath=("$HOME/.docker/completions" $fpath)
+source "$ZSH/oh-my-zsh.sh"
 
-# Uncomment the following line to use case-sensitive completion.
-# CASE_SENSITIVE="true"
-
-# Uncomment the following line to use hyphen-insensitive completion. Case
-# sensitive completion must be off. _ and - will be interchangeable.
-# HYPHEN_INSENSITIVE="true"
-
-# Uncomment the following line to disable bi-weekly auto-update checks.
-# DISABLE_AUTO_UPDATE="true"
-
-# Uncomment the following line to change how often to auto-update (in days).
-# export UPDATE_ZSH_DAYS=13
-
-# Uncomment the following line to disable colors in ls.
-# DISABLE_LS_COLORS="true"
-
-# Uncomment the following line to disable auto-setting terminal title.
-# DISABLE_AUTO_TITLE="true"
-
-# Uncomment the following line to enable command auto-correction.
-# ENABLE_CORRECTION="true"
-
-# Uncomment the following line to display red dots whilst waiting for completion.
-# COMPLETION_WAITING_DOTS="true"
-
-# Uncomment the following line if you want to disable marking untracked files
-# under VCS as dirty. This makes repository status check for large repositories
-# much, much faster.
-# DISABLE_UNTRACKED_FILES_DIRTY="true"
-
-# Uncomment the following line if you want to change the command execution time
-# stamp shown in the history command output.
-# The optional three formats: "mm/dd/yyyy"|"dd.mm.yyyy"|"yyyy-mm-dd"
-# HIST_STAMPS="mm/dd/yyyy"
-
-# Would you like to use another custom folder than $ZSH/custom?
-# ZSH_CUSTOM=/path/to/new-custom-folder
-
-# Which plugins would you like to load? (plugins can be found in ~/.oh-my-zsh/plugins/*)
-# Custom plugins may be added to ~/.oh-my-zsh/custom/plugins/
-# Example format: plugins=(rails git textmate ruby lighthouse)
-# Add wisely, as too many plugins slow down shell startup.
-plugins=(
-  git
-  pipenv
-  autojump
-  zsh-autosuggestions
-  zsh-syntax-highlighting
-  macos
-)
-
-source $ZSH/oh-my-zsh.sh
-
-# User configuration
-
-# export MANPATH="/usr/local/man:$MANPATH"
-
-# You may need to manually set your language environment
-# export LANG=en_US.UTF-8
+# ── 기본 환경 ──
 export LANG=ko_KR.UTF-8
+export EDITOR='vim'
+export SHELL=/bin/zsh
+export KEYTIMEOUT=1
+export POETRY_VIRTUALENVS_IN_PROJECT=true
 
-# Preferred editor for local and remote sessions
-# if [[ -n $SSH_CONNECTION ]]; then
-#   export EDITOR='vim'
-# else
-#   export EDITOR='mvim'
-# fi
-
-# Compilation flags
-# export ARCHFLAGS="-arch x86_64"
-
-# ssh
-# export SSH_KEY_PATH="~/.ssh/rsa_id"
-
-# Set personal aliases, overriding those provided by oh-my-zsh libs,
-# plugins, and themes. Aliases can be placed here, though oh-my-zsh
-# users are encouraged to define aliases within the ZSH_CUSTOM folder.
-# For a full list of active aliases, run `alias`.
-#
-# Example aliases
-# alias zshconfig="mate ~/.zshrc"
-# alias ohmyzsh="mate ~/.oh-my-zsh"
-
-# brew
-eval "$(/opt/homebrew/bin/brew shellenv)"
-
-SEGMENT_SEPARATOR=$'\ue0b0'
+# 프롬프트: agnoster 앞에 날짜/시간 세그먼트 (반드시 oh-my-zsh source 뒤)
+SEGMENT_SEPARATOR=$''
 PROMPT='%{$fg[black]%}%{$bg[green]%} %D{%y/%m/%d} %D{%H:%M:%S} %{$fg[green]%}%{$bg[black]%}$SEGMENT_SEPARATOR'$PROMPT
 DISABLE_UPDATE_PROMPT=true
-export SHELL=/usr/local/bin/zsh
-export EDITOR='vim'
-alias vi="vim"
-set -o vi
-alias dps='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"'
 
+# ── vi 모드 키바인딩 ──
+set -o vi
 bindkey -v
 bindkey '\e[3~' delete-char
-bindkey '^R' history-incremental-search-backward
+bindkey '^R' history-incremental-search-backward   # fzf 미설치 시 fallback
 set -K
-export KEYTIMEOUT=1
-export PIPENV_VENV_IN_PROJECT=1
-export PATH=$PATH:~/.local/bin
+
+# ── brew ──
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
+# ── PATH ──
+export PATH="$PATH:$HOME/.local/bin"
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"                       # psql
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export PATH="$PATH:$ANDROID_HOME/platform-tools:$ANDROID_HOME/build-tools/36.0.0"
+export PATH="$HOME/.antigravity/antigravity/bin:$PATH"
+export PATH="$HOME/.opencode/bin:$PATH"
+
+# pnpm
+export PNPM_HOME="$HOME/Library/pnpm"
+case ":$PATH:" in *":$PNPM_HOME:"*) ;; *) export PATH="$PNPM_HOME:$PATH" ;; esac
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+export PATH="$BUN_INSTALL/bin:$PATH"
+[ -s "$HOME/.bun/_bun" ] && source "$HOME/.bun/_bun"
+
+# cargo
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+
+# ── 런타임 매니저 (lazy = 셸 시작 빠르게) ──
+# nvm: nvm/node/npm/npx/corepack 첫 호출 시에만 로드
+export NVM_DIR="$HOME/.nvm"
+_nvm_lazy() { unset -f nvm node npm npx corepack 2>/dev/null; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"; }
+nvm()      { _nvm_lazy; nvm "$@"; }
+node()     { _nvm_lazy; node "$@"; }
+npm()      { _nvm_lazy; npm "$@"; }
+npx()      { _nvm_lazy; npx "$@"; }
+corepack() { _nvm_lazy; corepack "$@"; }
+
+# pyenv: shims 즉시 PATH(= python/pip/poetry 동작), 무거운 init은 첫 pyenv 호출 시
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/shims:$PYENV_ROOT/bin:$PATH"
+pyenv() { unset -f pyenv; eval "$(command pyenv init - zsh)"; pyenv "$@"; }
+
+# direnv
+eval "$(direnv hook zsh)"
+
+# google-cloud-sdk
+[ -f "$HOME/Downloads/google-cloud-sdk/path.zsh.inc" ]       && . "$HOME/Downloads/google-cloud-sdk/path.zsh.inc"
+[ -f "$HOME/Downloads/google-cloud-sdk/completion.zsh.inc" ] && . "$HOME/Downloads/google-cloud-sdk/completion.zsh.inc"
+
+# ── 별칭 ──
+alias vi="vim"
+alias dps='docker ps --format "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}"'
+alias claude-yolo='claude --dangerously-skip-permissions'
+alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
+alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
+
+# ── nydus: Tailscale 머신의 tmux 세션 attach-or-create (ssh+tmux 터널) ──
+#   nydus / nydus <host>  →  세션 안에서 claude, 빠져나오기 Ctrl-b d
+nydus() { [ -z "$1" ] && tmux new -A -s nydus || ssh -t "$1" 'tmux new -A -s nydus'; }
+
+# ── 머신별/민감 설정 (장비 alias 등, 커밋 안 함) ──
+[ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
+
+# ── 모던 CLI 도구 (설치돼 있을 때만 로드 → fresh 머신서도 에러 없음) ──
+command -v fzf    >/dev/null && source <(fzf --zsh)        # Ctrl-R 히스토리 / Ctrl-T 파일 / Alt-C 디렉터리
+command -v zoxide >/dev/null && eval "$(zoxide init zsh)"   # z <dir> 스마트 점프
+if command -v eza >/dev/null; then
+  alias ls='eza --group-directories-first'
+  alias ll='eza -lah --git --group-directories-first'
+  alias la='eza -lah --group-directories-first'
+  alias lt='eza --tree --level=2'
+fi
+command -v bat >/dev/null && alias cat='bat --paging=never'
+[ -r /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] && source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+# zsh-syntax-highlighting 은 반드시 맨 마지막 source
+[ -r /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# 커서는 Ghostty 설정으로 처리 (shell-integration-features=no-cursor + cursor-style=block)

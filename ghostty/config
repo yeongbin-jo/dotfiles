@@ -1,0 +1,41 @@
+# iTerm2 "CHIDA" 프로파일에서 이관
+
+# 원본 폰트: 'DejaVuSansMonoPowerline 14'  (안 맞으면 `ghostty +list-fonts` 로 정확한 family 확인)
+font-family = DejaVu Sans Mono for Powerline
+font-size = 14
+
+background = #131313
+foreground = #d6dbe5
+cursor-color = #b9b9b9
+cursor-text = #101010
+selection-background = #1f1f1f
+selection-foreground = #d6dbe5
+
+palette = 0=#1f1f1f
+palette = 1=#f81118
+palette = 2=#2dc55e
+palette = 3=#ecba0f
+palette = 4=#2a84d2
+palette = 5=#4e5ab7
+palette = 6=#1081d6
+palette = 7=#d6dbe5
+palette = 8=#d6dbe5
+palette = 9=#de352e
+palette = 10=#1dd361
+palette = 11=#f3bd09
+palette = 12=#1081d6
+palette = 13=#5350b9
+palette = 14=#0f7ddb
+palette = 15=#ffffff
+
+cursor-style-blink = false
+
+# --- 추가 튜닝 ---
+# 한글(및 DejaVu에 없는 글리프) 폴백 — Latin은 DejaVu, 한글은 이걸로
+font-family = D2Coding
+# 탭을 풀폭 대신 콘텐츠 너비(컴팩트, 타이틀바 통합)
+macos-titlebar-style = tabs
+cursor-style = block
+
+# Ghostty 쉘통합이 프롬프트에서 커서를 바(│)로 바꾸는 동작 끄기 → cursor-style=block 유지
+shell-integration-features = no-cursor
