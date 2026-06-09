@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ~/.claude/statusline.sh — Claude Code status line (chezmoi 관리)
-# Claude 가 세션 JSON 을 stdin 으로 넘김
-#   → 모델 · 디렉터리 · git 브랜치 · 사용량(5h/7d used% + 리셋까지, Pro·Max 한정)
+# stdin = 세션 JSON → 모델 · 디렉터리 · git 브랜치 · 사용량
+#   5h: used% + 리셋까지 h:mm:ss (초단위) / 7d: used% + Dd h:mm (분단위)
+#   ※ 카운트다운 실시간 틱하려면 settings.json 에 "refreshInterval": 1 필요
 python3 -c '
 import sys, json, os, subprocess, time
 try:
@@ -18,32 +19,34 @@ try:
 except Exception:
     pass
 
-def reset_str(ra):
-    if not ra:
-        return ""
-    delta = ra - time.time()
-    if delta <= 0:
-        return "↻now"
-    if delta < 3600:
-        return "↻%dm" % round(delta / 60)
-    if delta < 86400:
-        return "↻%dh" % round(delta / 3600)
-    return "↻%dd" % round(delta / 86400)
+def fmt_hms(secs):   # 5h: 초단위
+    if secs <= 0:
+        return "now"
+    h, r = divmod(secs, 3600); m, s = divmod(r, 60)
+    return "%d:%02d:%02d" % (h, m, s) if h else "%d:%02d" % (m, s)
 
-def seg(label, info):
+def fmt_dhm(secs):   # 7d: 분단위
+    if secs <= 0:
+        return "now"
+    dd, r = divmod(secs, 86400); h, r = divmod(r, 3600); m = r // 60
+    return "%dd %d:%02d" % (dd, h, m) if dd else "%d:%02d" % (h, m)
+
+def seg(label, info, fmt):
     info = info or {}
     up = info.get("used_percentage")
     if up is None:
         return None
-    rs = reset_str(info.get("resets_at"))
-    return "%s %d%%%s" % (label, round(up), (" " + rs if rs else ""))
+    ra = info.get("resets_at")
+    cd = " ↻" + fmt(int(ra - time.time())) if ra else ""
+    return "%s %d%%%s" % (label, round(up), cd)
 
 rl = d.get("rate_limits") or {}
 c = lambda code, s: "\x1b[%sm%s\x1b[0m" % (code, s)
 parts = [c("38;5;75", model), c("38;5;252", base)]
 if branch:
     parts.append(c("38;5;114", "⎇ " + branch))
-segs = [s for s in (seg("5h", rl.get("five_hour")), seg("7d", rl.get("seven_day"))) if s]
+segs = [s for s in (seg("5h", rl.get("five_hour"), fmt_hms),
+                    seg("7d", rl.get("seven_day"), fmt_dhm)) if s]
 if segs:
     parts.append(c("38;5;208", "│ " + "  ".join(segs)))
 print("  ".join(parts))
