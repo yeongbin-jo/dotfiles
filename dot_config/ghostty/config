@@ -36,6 +36,8 @@ font-family = D2Coding
 # 탭을 풀폭 대신 콘텐츠 너비(컴팩트, 타이틀바 통합)
 macos-titlebar-style = tabs
 cursor-style = block
+# Option 키를 Alt/Meta 로 (tmux Alt+숫자 창 이동 등). 특수문자 입력은 포기됨
+macos-option-as-alt = true
 
 # Ghostty 쉘통합이 프롬프트에서 커서를 바(│)로 바꾸는 동작 끄기 → cursor-style=block 유지
 shell-integration-features = no-cursor,ssh-terminfo
