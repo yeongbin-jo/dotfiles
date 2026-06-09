@@ -1,0 +1,20 @@
+{
+    "title": "Fine volume (quarter-step)",
+    "rules": [
+        {
+            "description": "Volume keys = Shift+Option (quarter-step)",
+            "manipulators": [
+                {
+                    "type": "basic",
+                    "from": { "key_code": "volume_increment" },
+                    "to": [{ "key_code": "volume_increment", "modifiers": ["left_shift", "left_option"] }]
+                },
+                {
+                    "type": "basic",
+                    "from": { "key_code": "volume_decrement" },
+                    "to": [{ "key_code": "volume_decrement", "modifiers": ["left_shift", "left_option"] }]
+                }
+            ]
+        }
+    ]
+}

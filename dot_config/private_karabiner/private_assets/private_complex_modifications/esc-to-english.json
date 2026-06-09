@@ -1,0 +1,20 @@
+{
+    "title": "Switch to English when ESC is pressed",
+    "rules": [
+        {
+            "description": "Switch to English when ESC is pressed",
+            "manipulators": [
+                {
+                    "from": { "key_code": "escape", "modifiers": { "optional": ["any"] } },
+                    "to": [
+                        { "key_code": "escape" }
+                    ],
+                    "to_after_key_up": [
+                        { "select_input_source": { "language": "en" } }
+                    ],
+                    "type": "basic"
+                }
+            ]
+        }
+    ]
+}
