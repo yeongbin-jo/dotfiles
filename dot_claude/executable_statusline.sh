@@ -40,8 +40,10 @@ def bar(remaining, width=14):   # 잔여율 게이지 — 퍼센트 텍스트를
     txt = ("%d%% " % remaining).rjust(width)
     filled = max(0, min(width, round(width * remaining / 100)))
     col = "114" if remaining > 50 else "178" if remaining > 20 else "167"
-    return ("\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
-            "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:])
+    return ("\x1b[38;5;245m[\x1b[0m" +
+            "\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
+            "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:] +
+            "\x1b[38;5;245m]\x1b[0m")
 
 right_s = ""
 sd = (d.get("rate_limits") or {}).get("seven_day") or {}
