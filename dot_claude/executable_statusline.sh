@@ -36,8 +36,8 @@ def fmt_countdown(secs):   # Nd HH:mm:ss (하루 미만이면 HH:mm:ss)
     m, s = divmod(r, 60)
     return "%dd %02d:%02d:%02d" % (dd, h, m, s) if dd else "%02d:%02d:%02d" % (h, m, s)
 
-def bar(remaining, width=14):   # 잔여율 게이지 — 퍼센트 텍스트를 바 안에 오버레이
-    txt = ("%d%%" % remaining).center(width)
+def bar(remaining, width=14):   # 잔여율 게이지 — 퍼센트 텍스트를 바 안 우측 정렬로 오버레이
+    txt = ("%d%% " % remaining).rjust(width)
     filled = max(0, min(width, round(width * remaining / 100)))
     col = "114" if remaining > 50 else "178" if remaining > 20 else "167"
     return ("\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
