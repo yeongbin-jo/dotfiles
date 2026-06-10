@@ -58,14 +58,24 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 
 # ── 런타임 매니저 (lazy = 셸 시작 빠르게) ──
 {{- if stat (joinPath .chezmoi.homeDir ".nvm") }}
-# nvm: nvm/node/npm/npx/corepack 첫 호출 시에만 로드
+# nvm: 기본 node 의 bin 을 PATH 에 직접 추가 (실 바이너리 → /bin/sh·tauri 등 subprocess 가 inherit).
+# (옛 lazy 함수 방식은 node 가 zsh 함수라 subprocess 에서 'node: not found' 발생 → 폐기.)
+# nvm.sh 전체 소싱(느림)은 `nvm` 명령 첫 호출 때만 lazy 로.
 export NVM_DIR="$HOME/.nvm"
-_nvm_lazy() { unset -f nvm node npm npx corepack 2>/dev/null; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"; }
-nvm()      { _nvm_lazy; nvm "$@"; }
-node()     { _nvm_lazy; node "$@"; }
-npm()      { _nvm_lazy; npm "$@"; }
-npx()      { _nvm_lazy; npx "$@"; }
-corepack() { _nvm_lazy; corepack "$@"; }
+if [ -d "$NVM_DIR/versions/node" ]; then
+  _nvm_pick=""
+  if [ -f "$NVM_DIR/alias/default" ]; then
+    _nvm_d="$(cat "$NVM_DIR/alias/default" 2>/dev/null)"
+    for _nvm_c in "$_nvm_d" "v$_nvm_d"; do
+      [ -d "$NVM_DIR/versions/node/$_nvm_c/bin" ] && _nvm_pick="$_nvm_c" && break
+    done
+  fi
+  [ -z "$_nvm_pick" ] && _nvm_pick="$(ls -1 "$NVM_DIR/versions/node" 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_nvm_pick" ] && PATH="$NVM_DIR/versions/node/$_nvm_pick/bin:$PATH"
+  unset _nvm_pick _nvm_d _nvm_c
+fi
+# `nvm` 명령만 lazy (버전 전환 시에만 nvm.sh 소싱)
+nvm() { unset -f nvm; [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"; [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"; nvm "$@"; }
 {{- end }}
 {{- if stat (joinPath .chezmoi.homeDir ".pyenv") }}
 
