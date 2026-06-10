@@ -63,6 +63,8 @@ else:
         cols = int(os.environ.get("COLUMNS") or 0)
     except ValueError:
         cols = 0
-    pad = cols - vis(left_s) - vis(right_s) - 1 if cols else 0
+    # CC UI 가 statusline 좌우에 자체 패딩을 둠 → COLUMNS 그대로 쓰면 … 잘림.
+    # ccstatusline 과 동일하게 6칸 예약 (full-width flex 모드의 검증된 마진)
+    pad = cols - vis(left_s) - vis(right_s) - 6 if cols else 0
     print(left_s + " " * max(2, pad) + right_s)
 '
