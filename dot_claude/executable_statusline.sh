@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ~/.claude/statusline.sh — Claude Code status line (chezmoi 관리)
 # stdin = 세션 JSON
-#   좌: 모델 · 디렉터리 · git 브랜치
+#   좌: 모델 · 디렉터리 · git 브랜치 · 컨텍스트 사용량 게이지(사용↑ 하늘→파랑→검붉→빨강)
 #   우(터미널 오른쪽 끝 정렬): 🗓️ Nd HH:mm:ss 주간 리셋 카운트다운 + 잔여량 프로그레스 바
 #   ※ 카운트다운 실시간 틱하려면 settings.json 에 "refreshInterval": 1 필요
 #   ※ 우측 정렬은 Claude Code 가 COLUMNS env 를 주입하는 v2.1.153+ 필요 (미주입 시 좌측 fallback)
@@ -23,9 +23,24 @@ except Exception:
     pass
 
 c = lambda code, s: "\x1b[%sm%s\x1b[0m" % (code, s)
+
+def ctx_seg(used, width=14):   # 컨텍스트 사용량 바 — 우측 잔여량 바와 동일 디자인, 색만 사용량 그라데이션(사용↑: 하늘117→파랑33→검붉124→빨강196)
+    used = max(0, min(100, round(used)))
+    txt = ("%d%% " % used).rjust(width)
+    filled = max(0, min(width, round(width * used / 100)))
+    col = "153" if used < 40 else "111" if used < 65 else "131" if used < 82 else "210"   # 파스텔: 연하늘→연파랑→더스티레드→살몬
+    return ("\x1b[38;5;245m[\x1b[0m" +
+            "\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
+            "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:] +
+            "\x1b[38;5;245m]\x1b[0m")
+
 left = [c("38;5;75", model), c("38;5;252", base)]
 if branch:
     left.append(c("38;5;114", "⎇ " + branch))
+cw = d.get("context_window") or {}
+cu = cw.get("used_percentage")
+if cu is not None:
+    left.append(ctx_seg(cu))
 left_s = "  ".join(left)
 
 def fmt_countdown(secs):   # Nd HH:mm:ss (하루 미만이면 HH:mm:ss)
