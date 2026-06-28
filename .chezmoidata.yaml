@@ -1,0 +1,4 @@
+# repo-level 기본 데이터 (머신 chezmoi.toml [data] 가 override)
+# role: workstation = 노트북/데스크톱(배터리 위젯·전체 dotfiles)
+#       server      = 헤드리스 서버(eq/WSL 등; tmux 만 scoped, 배터리 생략)
+role: workstation

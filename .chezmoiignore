@@ -3,3 +3,16 @@ README.md
 Brewfile
 iterm2.json
 macos.sh
+
+# ── role=server (eq/WSL 등 헤드리스): tmux 설정만 scoped, 나머지 dotfiles 제외 ──
+#    → prod 에 age 키/zsh·vim 설정 안 내려보냄. .tmux.conf + 플러그인 설치 스크립트만 적용.
+{{- if eq .role "server" }}
+.claude
+.codex
+.config
+.gitconfig
+.screenrc
+.vimrc
+.zshrc
+.zshrc.local
+{{- end }}

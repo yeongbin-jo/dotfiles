@@ -1,5 +1,6 @@
 # ============================================================
-#  ~/.tmux.conf  —  chezmoi 관리 (3대 Mac 공통)
+#  ~/.tmux.conf  —  chezmoi 관리 (Mac + Linux 서버 공통, 템플릿)
+#  · OS 분기: {{ .chezmoi.os }} / role: {{ .role }}
 # ============================================================
 
 # ── 기본 ──
@@ -48,7 +49,7 @@ setw -g automatic-rename-format '#(p="#{pane_current_path}"; b=$(git -C "$p" bra
 
 # ============================================================
 #  상태바 — 위쪽 + Kanagawa (미니멀: 배경블록 없음)
-#  · 의존성 0 (TPM/플러그인 없음), #() 인라인 셸 위젯
+#  · 상태바 자체는 플러그인 0 (TPM 불필요), #() 인라인 셸 위젯
 #  · 현재 창 = 밝은 블루+볼드 / 비활성 창 = 디밍 그레이 (배경 X)
 #  · tmux 함정 두 가지를 회피하도록 작성됨:
 #    (1) tmux는 status 전체에 strftime을 적용 → #() 명령 텍스트엔 '%' 와 ')' 금지
@@ -71,13 +72,22 @@ setw -g window-status-separator ""
 setw -g window-status-format         '#[fg=#727169] #I #W '
 setw -g window-status-current-format '#[fg=#7e9cd8,bold] #I #W#{?window_zoomed_flag, Z,} #[default]'
 
-# ── 오른쪽: SYNC경고 · CPU(load) · MEM(used%) · BAT · host · 시계 ──
+# ── 오른쪽: SYNC경고 · CPU(load) · MEM(used%) · [BAT|DKR] · host · 시계 ──
 #    SYNC: synchronize-panes(모든 패널 동시입력) 켜졌을 때만 빨갛게 (사고 방지)
+#    CPU/MEM 위젯은 OS별 분기 (darwin=sysctl/memory_pressure/pmset · linux=/proc·free·docker)
 set -g  status-right-length 160
 set -g  status-right '#[fg=#ff5d62,bold]#{?pane_synchronized,SYNC   ,}#[default]'
+{{- if eq .chezmoi.os "darwin" }}
 set -ga status-right ' #[fg=#727169]CPU#(L=`sysctl -n vm.loadavg | cut -d" " -f2`; N=`sysctl -n hw.ncpu`; I=`echo $L | cut -d. -f1`; if [ ${I:-0} -ge $N ]; then C="#[fg=#ff5d62]"; else C="#[fg=#ffa066]"; fi; echo $C $L)'
 set -ga status-right '   #[fg=#727169]MEM#(F=`memory_pressure | grep "free percentage" | grep -Eo "[0-9]+" | tail -1`; U=`expr 100 - ${F:-0}`; if [ $U -ge 90 ]; then C="#[fg=#ff5d62]"; elif [ $U -ge 75 ]; then C="#[fg=#e6c384]"; else C="#[fg=#7aa89f]"; fi; echo $C $U)%%'
+{{- if ne .role "server" }}
 set -ga status-right '  #(P=`pmset -g batt | grep -i internal | cut -d";" -f1 | grep -Eo "[0-9]+" | tail -1`; A=`pmset -g batt | grep -c "AC Power"`; if [ ${A:-0} -ge 1 ]; then T=AC; else T=BAT; fi; if [ ${P:-100} -le 20 ]; then C="#[fg=#ff5d62]"; elif [ ${P:-100} -le 50 ]; then C="#[fg=#e6c384]"; else C="#[fg=#98bb6c]"; fi; echo $C $T $P)%%'
+{{- end }}
+{{- else }}
+set -ga status-right ' #[fg=#727169]CPU#(L=`cut -d" " -f1 /proc/loadavg`; N=`nproc`; I=`echo $L | cut -d. -f1`; if [ ${I:-0} -ge $N ]; then C="#[fg=#ff5d62]"; else C="#[fg=#ffa066]"; fi; echo $C $L)'
+set -ga status-right '   #[fg=#727169]MEM#(T=`grep MemTotal /proc/meminfo | grep -Eo "[0-9]+"`; A=`grep MemAvailable /proc/meminfo | grep -Eo "[0-9]+"`; D=`expr ${T:-1} - ${A:-0}`; U=`expr $D \* 100 / ${T:-1}`; if [ ${U:-0} -ge 90 ]; then C="#[fg=#ff5d62]"; elif [ ${U:-0} -ge 75 ]; then C="#[fg=#e6c384]"; else C="#[fg=#7aa89f]"; fi; echo $C $U)%%'
+set -ga status-right '   #[fg=#727169]DKR#(N=`docker ps -q 2>/dev/null | wc -l | tr -d " "`; echo "#[fg=#7aa89f] ${N:-0}")'
+{{- end }}
 set -ga status-right '   #[fg=#727169]#h'
 set -ga status-right '   #[fg=#7e9cd8,bold]%H:%M #[fg=#54546d]%m-%d '
 
@@ -86,3 +96,22 @@ set -g pane-border-style        "fg=#363646"
 set -g pane-active-border-style "fg=#7e9cd8"
 set -g message-style            "bg=#7e9cd8,fg=#1f1f28,bold"
 set -g mode-style               "bg=#2d4f67,fg=#dcd7ba"
+
+# ============================================================
+#  플러그인 (TPM) — 세션 영속(resurrect+continuum)
+#  · TPM 설치/플러그인 클론은 chezmoi run_onchange 스크립트가 처리
+#  · resurrect: prefix+Ctrl-s 저장 / prefix+Ctrl-r 복원
+#  · continuum: 15분 자동저장 + tmux 서버 시작 시 자동복원
+#  · 모니터링 세션은 복원 시 프로그램 새로 띄움 = 상태손실 무관(이상적)
+# ============================================================
+set -g @plugin 'tmux-plugins/tpm'
+set -g @plugin 'tmux-plugins/tmux-resurrect'
+set -g @plugin 'tmux-plugins/tmux-continuum'
+
+# 복원 시 다시 띄울 프로그램 화이트리스트 (모니터링 도구들)
+set -g @resurrect-processes 'btop htop ctop glances "~lazydocker"'
+set -g @resurrect-capture-pane-contents 'on'
+set -g @continuum-restore 'on'
+
+# TPM 초기화 — 반드시 맨 마지막 줄
+run '~/.tmux/plugins/tpm/tpm'

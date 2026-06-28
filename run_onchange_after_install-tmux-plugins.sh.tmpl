@@ -1,0 +1,26 @@
+#!/bin/sh
+# TPM(tmux Plugin Manager) 부트스트랩 + 선언된 플러그인 설치.
+# run_onchange: 아래 해시(플러그인 목록/OS)가 바뀔 때만 재실행.
+#   plugins: tpm, tmux-resurrect, tmux-continuum
+#   os: {{ .chezmoi.os }}
+set -e
+
+command -v tmux >/dev/null 2>&1 || { echo "[tmux-plugins] tmux 미설치 → skip"; exit 0; }
+command -v git  >/dev/null 2>&1 || { echo "[tmux-plugins] git 미설치 → skip"; exit 0; }
+
+TPM="$HOME/.tmux/plugins/tpm"
+if [ ! -d "$TPM/.git" ]; then
+  echo "[tmux-plugins] TPM 설치..."
+  git clone --depth 1 https://github.com/tmux-plugins/tpm "$TPM"
+fi
+
+# install_plugins 는 tmux 서버 컨텍스트(config 로드 → TMUX_PLUGIN_MANAGER_PATH)가 필요.
+# 임시 세션 생성 후 config 를 source 해서 @plugin 옵션을 올린 뒤 설치한다.
+# (실행 중인 유저 서버가 있어도 우리 세션만 kill, source-file 은 prefix+r 와 동일한 무해한 리로드)
+SESSION="__chezmoi_tpm_$$"
+tmux new-session -d -s "$SESSION" 2>/dev/null || tmux start-server 2>/dev/null || true
+tmux source-file "$HOME/.tmux.conf" 2>/dev/null || true
+echo "[tmux-plugins] 플러그인 설치/갱신..."
+"$TPM/bin/install_plugins" || true
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+echo "[tmux-plugins] 완료."
