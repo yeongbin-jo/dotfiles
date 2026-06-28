@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+import json
+import math
+import os
+import select
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+CACHE_TTL_SECONDS = 90
+FETCH_TIMEOUT_SECONDS = 14
+BASELINE_TOKENS = 12000
+CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
+STATE_DB = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
+
+
+def cache_dir() -> Path:
+    root = os.environ.get("TMPDIR") or "/tmp"
+    path = Path(root) / "codex-tmux-statusline"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+CACHE_FILE = cache_dir() / "state.json"
+LOCK_FILE = cache_dir() / "refresh.lock"
+
+
+def read_cache() -> dict:
+    try:
+        return json.loads(CACHE_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def write_cache(state: dict) -> None:
+    tmp = CACHE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, separators=(",", ":")))
+    os.replace(tmp, CACHE_FILE)
+
+
+def acquire_lock() -> bool:
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - LOCK_FILE.stat().st_mtime > FETCH_TIMEOUT_SECONDS * 2:
+                LOCK_FILE.unlink()
+                return acquire_lock()
+        except OSError:
+            pass
+        return False
+
+
+def release_lock() -> None:
+    try:
+        LOCK_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def codex_binary() -> str:
+    return shutil.which("codex") or "/opt/homebrew/bin/codex"
+
+
+def app_server_request() -> dict:
+    proc = subprocess.Popen(
+        [codex_binary(), "app-server", "--stdio"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+
+    messages = [
+        {
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "clientInfo": {
+                    "name": "tmux_codex_status",
+                    "title": "tmux Codex Status",
+                    "version": "0.1.0",
+                },
+                "capabilities": {
+                    "optOutNotificationMethods": [
+                        "account/rateLimits/updated",
+                        "remoteControl/status/changed",
+                    ]
+                },
+            },
+        },
+        {"method": "initialized", "params": {}},
+        {"id": 1, "method": "account/rateLimits/read"},
+    ]
+
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+
+    for message in messages:
+        proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+    proc.stdin.flush()
+
+    deadline = time.time() + FETCH_TIMEOUT_SECONDS
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([proc.stdout], [], [], max(0.0, deadline - time.time()))
+            if not ready:
+                break
+            line = proc.stdout.readline()
+            if not line:
+                break
+            payload = json.loads(line)
+            if payload.get("id") == 1:
+                if "error" in payload:
+                    raise RuntimeError(payload["error"].get("message", "rate limit request failed"))
+                return payload.get("result") or {}
+        raise TimeoutError("timed out reading Codex rate limits")
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def clamp_percent(value) -> float:
+    try:
+        return min(100.0, max(0.0, float(value)))
+    except Exception:
+        return 0.0
+
+
+def extract_state(result: dict) -> dict:
+    limits_by_id = result.get("rateLimitsByLimitId") or {}
+    limits = limits_by_id.get("codex") or result.get("rateLimits") or {}
+    weekly = limits.get("secondary")
+    if not weekly:
+        for window_name in ("primary", "secondary"):
+            window = limits.get(window_name)
+            if window and (window.get("windowDurationMins") or 0) >= 10080:
+                weekly = window
+                break
+    if not weekly:
+        raise RuntimeError("weekly limit window unavailable")
+
+    reset_epoch = weekly.get("resetsAt")
+    if not reset_epoch:
+        raise RuntimeError("weekly reset timestamp unavailable")
+
+    credits = result.get("rateLimitResetCredits") or {}
+    credit_count = credits.get("availableCount")
+    if not isinstance(credit_count, int):
+        credit_count = 0
+
+    used = clamp_percent(weekly.get("usedPercent"))
+    return {
+        "remaining_percent": round(100.0 - used),
+        "resets_at": int(reset_epoch),
+        "reset_credits": credit_count,
+        "fetched_at": int(time.time()),
+        "error": None,
+    }
+
+
+def tmux_style(style: str, text: str) -> str:
+    return f"#[{style}]{text}#[default]"
+
+
+def countdown_text(seconds: int) -> str:
+    if seconds <= 0:
+        return "now"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
+    return f"{hours:02}:{minutes:02}:{secs:02}"
+
+
+def is_codex_command(command: str | None) -> bool:
+    if not command:
+        return False
+    return command == "codex" or command.startswith("codex-") or command.startswith("codex_")
+
+
+def bar_color(remaining: int) -> str:
+    if remaining > 50:
+        return "#7dcfff"
+    if remaining > 20:
+        return "#e6c384"
+    return "#ff5d62"
+
+
+def percent_bar(remaining: int, width: int = 14) -> str:
+    remaining = max(0, min(100, int(round(remaining))))
+    text = f"{remaining}% ".rjust(width)
+    filled = max(0, min(width, round(width * remaining / 100)))
+    filled_text = text[:filled]
+    empty_text = text[filled:]
+    color = bar_color(remaining)
+
+    return (
+        "#[fg=#54546d]["
+        f"#[bg={color},fg=#1f1f28,bold]{filled_text}"
+        f"#[bg=#2a2a37,fg=#938aa9]{empty_text}"
+        "#[default]#[fg=#54546d]]#[default]"
+    )
+
+
+def latest_rollout_path(cwd: str | None) -> str | None:
+    if not STATE_DB.exists():
+        return None
+
+    where = "archived=0 and coalesce(model, '') <> ''"
+    params: tuple[str, ...] = ()
+    if cwd:
+        where += " and cwd=?"
+        params = (cwd,)
+
+    try:
+        conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=0.05)
+        try:
+            row = conn.execute(
+                f"""
+                select rollout_path
+                  from threads
+                 where {where}
+                 order by updated_at_ms desc, recency_at_ms desc
+                 limit 1
+                """,
+                params,
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+    if not row:
+        return None
+    return row[0]
+
+
+def tail_lines(path: Path, max_bytes: int = CONTEXT_TAIL_BYTES) -> list[bytes]:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            start = max(0, end - max_bytes)
+            f.seek(start)
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
+def context_remaining_percent(tokens_in_context: int, context_window: int) -> int:
+    if context_window <= BASELINE_TOKENS:
+        return 0
+    effective_window = context_window - BASELINE_TOKENS
+    used = max(0, tokens_in_context - BASELINE_TOKENS)
+    remaining = max(0, effective_window - used)
+    return int(math.floor((remaining / effective_window) * 100.0 + 0.5))
+
+
+def latest_context_state(cwd: str | None) -> dict | None:
+    rollout = latest_rollout_path(cwd)
+    if not rollout:
+        return None
+
+    for raw_line in reversed(tail_lines(Path(rollout))):
+        try:
+            event = json.loads(raw_line)
+        except Exception:
+            continue
+        if event.get("type") != "event_msg":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("type") != "token_count":
+            continue
+
+        info = payload.get("info") or {}
+        last = info.get("last_token_usage") or {}
+        context_window = info.get("model_context_window")
+        total_tokens = last.get("total_tokens")
+        if not isinstance(context_window, int) or not isinstance(total_tokens, int):
+            return None
+
+        return {
+            "remaining_percent": context_remaining_percent(total_tokens, context_window),
+            "tokens": total_tokens,
+            "window": context_window,
+        }
+
+    return None
+
+
+def render_line(state: dict, context: dict | None) -> str:
+    remaining = int(state["remaining_percent"])
+    resets_at = int(state["resets_at"])
+    seconds = resets_at - int(time.time())
+    timer = countdown_text(seconds)
+    stale = ""
+    fetched_at = int(state.get("fetched_at") or 0)
+    if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
+        stale = tmux_style("fg=#e6c384", " stale")
+
+    return (
+        tmux_style("fg=#7e9cd8,bold", " CODEX ")
+        + (
+            tmux_style("fg=#dcd7ba", "CONTEXT ")
+            + percent_bar(int(context["remaining_percent"]))
+            + "  "
+            if context
+            else ""
+        )
+        + tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
+        + tmux_style("fg=#c8c093", "🗓️ " + timer)
+        + " "
+        + percent_bar(remaining)
+        + stale
+    )
+
+
+def refresh(lock_held: bool = False) -> int:
+    if not lock_held and not acquire_lock():
+        return 0
+    try:
+        state = read_cache()
+        try:
+            state.update(extract_state(app_server_request()))
+        except Exception as exc:
+            state.update({"error": str(exc), "error_at": int(time.time())})
+            if "remaining_percent" not in state or "resets_at" not in state:
+                state["line"] = tmux_style("fg=#ff5d62", " CODEX weekly unavailable ")
+        write_cache(state)
+        return 0
+    finally:
+        release_lock()
+
+
+def start_background_refresh() -> None:
+    if not acquire_lock():
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, __file__, "--refresh", "--lock-held"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        release_lock()
+
+
+def print_status() -> int:
+    state = read_cache()
+    now = int(time.time())
+    fetched_at = int(state.get("fetched_at") or 0)
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    if len(args) >= 2:
+        command, cwd = args[0], args[1]
+        if not is_codex_command(command):
+            print("")
+            return 0
+    else:
+        cwd = args[0] if args else None
+    context = latest_context_state(cwd)
+
+    if now - fetched_at > CACHE_TTL_SECONDS:
+        start_background_refresh()
+
+    if "remaining_percent" in state and "resets_at" in state:
+        print(render_line(state, context))
+    elif state.get("line"):
+        print(state["line"])
+    else:
+        print(tmux_style("fg=#727169", " CODEX weekly loading... "))
+    return 0
+
+
+def main() -> int:
+    if "--refresh" in sys.argv:
+        return refresh(lock_held="--lock-held" in sys.argv)
+    return print_status()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,5 @@
+#!/bin/sh
+session=$1
+
+tmux set-option -q -t "$session" status 2
+tmux set-option -q -t "$session" status-interval 1
