@@ -112,10 +112,11 @@ alias p2r="poetry export --without-hashes --without-urls | awk '{ print $1 }' FS
 
 # ── nydus: Tailscale 머신의 tmux 세션 attach-or-create (ssh+tmux 터널) ──
 #   nydus / nydus <host>  →  세션 안에서 claude, 빠져나오기 Ctrl-b d
+#   비공개 호스트(특수 동작)는 ~/.zshrc.local 의 _nydus_special 가 먼저 처리(있으면)
 nydus() {
   [ -z "$1" ] && { tmux new -A -s nydus; return; }
+  if typeset -f _nydus_special >/dev/null 2>&1 && _nydus_special "$1"; then return; fi
   case "$1" in
-    eq)    ssh -t eq '~/.local/bin/mon' ;;            # 프로덕 모니터링 대시보드(단일창 split)
     win-*) ssh -t "$1" 'wsl tmux new -A -s nydus' ;;  # Windows: tmux는 WSL 안에서
     *)     ssh -t "$1" 'tmux new -A -s nydus' ;;
   esac

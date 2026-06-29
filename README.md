@@ -18,7 +18,7 @@ secrets with [age](https://age-encryption.org) encryption.
 
 ## Templating highlights
 
-- Per-machine branches via a `machine` data var (`m4-air` / `m2-air` / `m4-pro`).
+- Per-machine branches via a `machine` data var (`m4-air` / `m2-air`).
 - Runtime managers load only when present (`stat ~/.nvm`, `stat ~/.pyenv`) — fresh
   machines never error on a missing tool.
 - Tool-specific config guarded by `lookPath` (e.g. git's `delta`).
