@@ -195,21 +195,39 @@ def is_codex_command(command: str | None) -> bool:
     return command == "codex" or command.startswith("codex-") or command.startswith("codex_")
 
 
-def bar_color(remaining: int) -> str:
+def context_bar_color(remaining: int) -> str:
+    # 컨텍스트 게이지: 잔여↓(=사용↑) 일수록 위험.
+    # ~/.claude/statusline.sh 의 ctx_seg 와 동일한 그라데이션(하늘→파랑→검붉→빨강)을 mirror.
+    #   여유 많음 → 하늘색, 점차 검붉은색, 꽉 차서 여유 없음 → 빨강/보라.
+    if remaining > 60:
+        return "colour153"   # 연하늘 (여유 많음)
+    if remaining > 35:
+        return "colour111"   # 연파랑
+    if remaining > 18:
+        return "colour131"   # 더스티 검붉
+    if remaining > 8:
+        return "colour210"   # 살몬 빨강
+    return "colour135"       # 보라 (컨텍스트 꽉 참)
+
+
+def weekly_bar_color(remaining: int) -> str:
+    # 주간 잔여량 게이지: 많을수록 안전 (컨텍스트와 반대 방향).
+    #   넉넉 → 초록, 줄어들수록 노랑·주황, 얼마 안 남으면 → 빨강.
     if remaining > 50:
-        return "#7dcfff"
-    if remaining > 20:
-        return "#e6c384"
-    return "#ff5d62"
+        return "colour114"   # 초록 (넉넉)
+    if remaining > 30:
+        return "colour178"   # 노랑
+    if remaining > 12:
+        return "colour208"   # 주황
+    return "colour167"       # 빨강 (얼마 안 남음)
 
 
-def percent_bar(remaining: int, width: int = 14) -> str:
+def percent_bar(remaining: int, color: str, width: int = 14) -> str:
     remaining = max(0, min(100, int(round(remaining))))
     text = f"{remaining}% ".rjust(width)
     filled = max(0, min(width, round(width * remaining / 100)))
     filled_text = text[:filled]
     empty_text = text[filled:]
-    color = bar_color(remaining)
 
     return (
         "#[fg=#54546d]["
@@ -319,7 +337,10 @@ def render_line(state: dict, context: dict | None) -> str:
         tmux_style("fg=#7e9cd8,bold", " CODEX ")
         + (
             tmux_style("fg=#dcd7ba", "CONTEXT ")
-            + percent_bar(int(context["remaining_percent"]))
+            + percent_bar(
+                int(context["remaining_percent"]),
+                context_bar_color(int(context["remaining_percent"])),
+            )
             + "  "
             if context
             else ""
@@ -327,7 +348,7 @@ def render_line(state: dict, context: dict | None) -> str:
         + tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
         + tmux_style("fg=#c8c093", "🗓️ " + timer)
         + " "
-        + percent_bar(remaining)
+        + percent_bar(remaining, weekly_bar_color(remaining))
         + stale
     )
 
