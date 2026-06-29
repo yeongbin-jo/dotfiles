@@ -15,4 +15,5 @@ macos.sh
 .vimrc
 .zshrc
 .zshrc.local
+.tmux/window-name-alias.sh
 {{- end }}

@@ -43,9 +43,13 @@ bind -n M-9 select-window -t 9
 bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded ✓"
 
 # ── 창 이름 = git 브랜치 (main/master 면 프로젝트명, claude 타이틀 대신) ──
+#    · 프로젝트명(main/master)일 때만 ~/.tmux/window-name-alias.sh 로 별칭 치환.
+#      (별칭 맵은 age 암호화 = 실제 repo 이름을 public dotfiles 에 노출 안 함.
+#       헬퍼 없거나(server role 등) 미일치면 원래 이름 그대로 → 안전 통과.)
+#      브랜치/워크트리 이름은 치환 대상 아님(별칭 헬퍼 미경유).
 set -g  allow-rename off          # 프로그램(claude)의 OSC 타이틀 변경 무시
 setw -g automatic-rename on
-setw -g automatic-rename-format '#(p="#{pane_current_path}"; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"; else echo "$b"; fi)'
+setw -g automatic-rename-format '#(p="#{pane_current_path}"; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi)'
 
 # ============================================================
 #  상태바 — 위쪽 + Kanagawa (미니멀: 배경블록 없음)
