@@ -38,6 +38,7 @@ fi
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # ── PATH ──
+export PATH="$HOME/.orbstack/bin:$PATH"                         # OrbStack docker/kubectl shims
 export PATH="$PATH:$HOME/.local/bin"
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"                       # psql
 export ANDROID_HOME="$HOME/Library/Android/sdk"
@@ -119,7 +120,7 @@ nydus() {
   if typeset -f _nydus_special >/dev/null 2>&1 && _nydus_special "$1"; then return; fi
   case "$1" in
     win-*) ssh -t "$1" 'wsl tmux new -A -s nydus' ;;  # Windows: tmux는 WSL 안에서
-    *)     ssh -t "$1" 'tmux new -A -s nydus' ;;
+    *)     ssh -t "$1" 'PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; exec tmux new -A -s nydus' ;;
   esac
 }
 
