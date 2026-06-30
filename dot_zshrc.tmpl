@@ -27,11 +27,12 @@ PROMPT='%{$fg[black]%}%{$bg[green]%} %D{%y/%m/%d} %D{%H:%M:%S} %{$fg[green]%}%{$
 DISABLE_UPDATE_PROMPT=true
 
 # ── vi 모드 키바인딩 ──
-set -o vi
-bindkey -v
-bindkey '\e[3~' delete-char
-bindkey '^R' history-incremental-search-backward   # fzf 미설치 시 fallback
-set -K
+if [[ -o interactive ]]; then
+  set -o vi
+  bindkey -v
+  bindkey '\e[3~' delete-char
+  bindkey '^R' history-incremental-search-backward   # fzf 미설치 시 fallback
+fi
 
 # ── brew ──
 eval "$(/opt/homebrew/bin/brew shellenv)"
@@ -126,7 +127,9 @@ nydus() {
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 
 # ── 모던 CLI 도구 (설치돼 있을 때만 로드 → fresh 머신서도 에러 없음) ──
-command -v fzf    >/dev/null && source <(fzf --zsh)        # Ctrl-R 히스토리 / Ctrl-T 파일 / Alt-C 디렉터리
+if [[ -o interactive && -t 0 && -t 1 ]] && command -v fzf >/dev/null; then
+  source <(fzf --zsh)                                     # Ctrl-R 히스토리 / Ctrl-T 파일 / Alt-C 디렉터리
+fi
 command -v zoxide >/dev/null && eval "$(zoxide init zsh)"   # z <dir> 스마트 점프
 if command -v eza >/dev/null; then
   alias ls='eza --group-directories-first'
