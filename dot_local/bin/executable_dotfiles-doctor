@@ -10,13 +10,28 @@ warn() { warn_count=$((warn_count + 1)); printf 'warn %s\n' "$*"; }
 fail() { fail_count=$((fail_count + 1)); printf 'fail %s\n' "$*"; }
 info() { printf 'info %s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+find_cmd() {
+  name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return 0
+  fi
+  for dir in /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
+    if [ -x "$dir/$name" ]; then
+      printf '%s\n' "$dir/$name"
+      return 0
+    fi
+  done
+  return 1
+}
 
 echo "dotfiles doctor"
 echo
 
-if have chezmoi; then
+chezmoi_bin="$(find_cmd chezmoi 2>/dev/null || true)"
+if [ -n "$chezmoi_bin" ]; then
   ok "chezmoi is installed"
-  source_dir="$(chezmoi source-path 2>/dev/null || printf '%s/.local/share/chezmoi' "$HOME")"
+  source_dir="$("$chezmoi_bin" source-path 2>/dev/null || printf '%s/.local/share/chezmoi' "$HOME")"
 else
   fail "chezmoi is not installed"
   source_dir="$HOME/.local/share/chezmoi"
@@ -46,8 +61,9 @@ else
 fi
 
 if [ -f "$source_dir/Brewfile" ]; then
-  if have brew; then
-    if brew bundle check --file="$source_dir/Brewfile" >/dev/null 2>&1; then
+  brew_bin="$(find_cmd brew 2>/dev/null || true)"
+  if [ -n "$brew_bin" ]; then
+    if "$brew_bin" bundle check --file="$source_dir/Brewfile" >/dev/null 2>&1; then
       ok "Brewfile dependencies are installed"
     else
       warn "Brewfile dependencies are incomplete; run: brew bundle --file=$source_dir/Brewfile"
@@ -94,8 +110,9 @@ if [ "$(uname -s)" = "Darwin" ]; then
     warn "Karabiner-Elements app is not installed"
   fi
 
-  if have karabiner_cli; then
-    profile="$(karabiner_cli --show-current-profile-name 2>/dev/null || true)"
+  karabiner_cli_bin="$(find_cmd karabiner_cli 2>/dev/null || true)"
+  if [ -n "$karabiner_cli_bin" ]; then
+    profile="$("$karabiner_cli_bin" --show-current-profile-name 2>/dev/null || true)"
     if [ -n "$profile" ]; then
       ok "Karabiner current profile is available"
     else
