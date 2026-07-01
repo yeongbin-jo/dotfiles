@@ -215,10 +215,50 @@ def is_codex_command(command: str | None) -> bool:
     return command == "codex" or command.startswith("codex-") or command.startswith("codex_")
 
 
-def is_claude_command(command: str | None) -> bool:
-    if not command:
+def process_tree_contains(pid: int | None, needle: str) -> bool:
+    if not pid:
         return False
-    return command == "claude" or command.startswith("claude-") or command.startswith("claude_")
+    try:
+        output = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=0.2,
+            check=False,
+        ).stdout
+    except Exception:
+        return False
+
+    children_by_parent: dict[int, list[tuple[int, str]]] = {}
+    for line in output.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            child_pid = int(parts[0])
+            parent_pid = int(parts[1])
+        except ValueError:
+            continue
+        children_by_parent.setdefault(parent_pid, []).append((child_pid, parts[2]))
+
+    pending = [pid]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for child_pid, command in children_by_parent.get(current, []):
+            if needle in command:
+                return True
+            pending.append(child_pid)
+    return False
+
+
+def is_claude_command(command: str | None, pane_pid: int | None = None) -> bool:
+    if command and (command == "claude" or command.startswith("claude-") or command.startswith("claude_")):
+        return True
+    return process_tree_contains(pane_pid, "/claude")
 
 
 def context_bar_color(used: int) -> str:
@@ -462,9 +502,15 @@ def print_status() -> int:
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     columns = 0
     command = None
+    pane_pid = None
     if len(args) >= 2:
         command, cwd = args[0], args[1]
-        if not is_codex_command(command) and not is_claude_command(command):
+        if len(args) >= 4:
+            try:
+                pane_pid = int(args[3])
+            except ValueError:
+                pane_pid = None
+        if not is_codex_command(command) and not is_claude_command(command, pane_pid):
             print("")
             return 0
         if len(args) >= 3:
@@ -475,7 +521,7 @@ def print_status() -> int:
     else:
         cwd = args[0] if args else None
 
-    if is_claude_command(command):
+    if is_claude_command(command, pane_pid):
         print(render_claude_line(cwd, columns))
         return 0
 
