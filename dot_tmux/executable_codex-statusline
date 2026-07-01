@@ -9,6 +9,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import hashlib
 from pathlib import Path
 
 
@@ -17,6 +18,7 @@ FETCH_TIMEOUT_SECONDS = 14
 BASELINE_TOKENS = 12000
 CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
 STATE_DB = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
+CLAUDE_CACHE_DIR = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
 
 
 def cache_dir() -> Path:
@@ -213,19 +215,22 @@ def is_codex_command(command: str | None) -> bool:
     return command == "codex" or command.startswith("codex-") or command.startswith("codex_")
 
 
-def context_bar_color(remaining: int) -> str:
-    # 컨텍스트 게이지: 잔여↓(=사용↑) 일수록 위험.
-    # ~/.claude/statusline.sh 의 ctx_seg 와 동일한 그라데이션(하늘→파랑→검붉→빨강)을 mirror.
-    #   여유 많음 → 하늘색, 점차 검붉은색, 꽉 차서 여유 없음 → 빨강/보라.
-    if remaining > 60:
+def is_claude_command(command: str | None) -> bool:
+    if not command:
+        return False
+    return command == "claude" or command.startswith("claude-") or command.startswith("claude_")
+
+
+def context_bar_color(used: int) -> str:
+    # 컨텍스트 게이지: 사용↑ 일수록 위험.
+    # ~/.claude/statusline.sh 와 동일한 그라데이션(하늘→파랑→검붉→빨강)을 mirror.
+    if used < 40:
         return "colour153"   # 연하늘 (여유 많음)
-    if remaining > 35:
+    if used < 65:
         return "colour111"   # 연파랑
-    if remaining > 18:
+    if used < 82:
         return "colour131"   # 더스티 검붉
-    if remaining > 8:
-        return "colour210"   # 살몬 빨강
-    return "colour135"       # 보라 (컨텍스트 꽉 참)
+    return "colour210"       # 살몬 빨강 (컨텍스트 꽉 참)
 
 
 def weekly_bar_color(remaining: int) -> str:
@@ -300,13 +305,12 @@ def tail_lines(path: Path, max_bytes: int = CONTEXT_TAIL_BYTES) -> list[bytes]:
         return []
 
 
-def context_remaining_percent(tokens_in_context: int, context_window: int) -> int:
+def context_used_percent(tokens_in_context: int, context_window: int) -> int:
     if context_window <= BASELINE_TOKENS:
         return 0
     effective_window = context_window - BASELINE_TOKENS
     used = max(0, tokens_in_context - BASELINE_TOKENS)
-    remaining = max(0, effective_window - used)
-    return int(math.floor((remaining / effective_window) * 100.0 + 0.5))
+    return int(math.floor((min(used, effective_window) / effective_window) * 100.0 + 0.5))
 
 
 def latest_context_state(cwd: str | None) -> dict | None:
@@ -333,7 +337,7 @@ def latest_context_state(cwd: str | None) -> dict | None:
             return None
 
         return {
-            "remaining_percent": context_remaining_percent(total_tokens, context_window),
+            "used_percent": context_used_percent(total_tokens, context_window),
             "tokens": total_tokens,
             "window": context_window,
         }
@@ -341,7 +345,29 @@ def latest_context_state(cwd: str | None) -> dict | None:
     return None
 
 
-def render_line(state: dict, context: dict | None, columns: int = 0) -> str:
+def claude_cache_key(cwd: str) -> str:
+    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
+
+
+def latest_claude_state(cwd: str | None) -> dict | None:
+    paths = []
+    if cwd:
+        paths.append(CLAUDE_CACHE_DIR / f"{claude_cache_key(cwd)}.json")
+    paths.append(CLAUDE_CACHE_DIR / "latest.json")
+
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except Exception:
+            continue
+        updated_at = int(state.get("updated_at") or 0)
+        if updated_at and time.time() - updated_at > CACHE_TTL_SECONDS * 10:
+            state["stale"] = True
+        return state
+    return None
+
+
+def render_line(product: str, state: dict, context_used: int, columns: int = 0) -> str:
     remaining = int(state["remaining_percent"])
     resets_at = int(state["resets_at"])
     seconds = resets_at - int(time.time())
@@ -351,13 +377,13 @@ def render_line(state: dict, context: dict | None, columns: int = 0) -> str:
     if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
         stale = tmux_style("fg=#e6c384", " stale")
 
-    context_remaining = int(context["remaining_percent"]) if context else 100
+    product_color = "#e6c384" if product == "CLAUDE" else "#c0c0c0"
     left = (
-        tmux_style("fg=#7e9cd8,bold", " CODEX ")
+        tmux_style(f"fg={product_color},bold", f" {product} ")
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
         + percent_bar(
-            context_remaining,
-            context_bar_color(context_remaining),
+            context_used,
+            context_bar_color(context_used),
         )
     )
     right = (
@@ -369,6 +395,33 @@ def render_line(state: dict, context: dict | None, columns: int = 0) -> str:
     )
     pad = columns - visible_width(left) - visible_width(right) - 2 if columns else 0
     return left + " " * max(2, pad) + right
+
+
+def render_claude_line(cwd: str | None, columns: int = 0) -> str:
+    state = latest_claude_state(cwd)
+    if not state:
+        return tmux_style("fg=#727169", " CLAUDE status loading... ")
+
+    weekly_remaining = state.get("weekly_remaining_percent")
+    resets_at = state.get("weekly_resets_at")
+    if weekly_remaining is None or resets_at is None:
+        left = (
+            tmux_style("fg=#e6c384,bold", " CLAUDE ")
+            + tmux_style("fg=#dcd7ba", "CONTEXT ")
+            + percent_bar(
+                int(state.get("context_used_percent") or 0),
+                context_bar_color(int(state.get("context_used_percent") or 0)),
+            )
+        )
+        stale = tmux_style("fg=#e6c384", " stale") if state.get("stale") else ""
+        return left + stale
+
+    line_state = {
+        "remaining_percent": int(weekly_remaining),
+        "resets_at": int(resets_at),
+        "fetched_at": int(state.get("updated_at") or 0),
+    }
+    return render_line("CLAUDE", line_state, int(state.get("context_used_percent") or 0), columns)
 
 
 def refresh(lock_held: bool = False) -> int:
@@ -408,9 +461,10 @@ def print_status() -> int:
     fetched_at = int(state.get("fetched_at") or 0)
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     columns = 0
+    command = None
     if len(args) >= 2:
         command, cwd = args[0], args[1]
-        if not is_codex_command(command):
+        if not is_codex_command(command) and not is_claude_command(command):
             print("")
             return 0
         if len(args) >= 3:
@@ -420,13 +474,19 @@ def print_status() -> int:
                 columns = 0
     else:
         cwd = args[0] if args else None
+
+    if is_claude_command(command):
+        print(render_claude_line(cwd, columns))
+        return 0
+
     context = latest_context_state(cwd)
+    context_used = int(context["used_percent"]) if context else 0
 
     if now - fetched_at > CACHE_TTL_SECONDS:
         start_background_refresh()
 
     if "remaining_percent" in state and "resets_at" in state:
-        print(render_line(state, context, columns))
+        print(render_line("CODEX", state, context_used, columns))
     elif state.get("line"):
         print(state["line"])
     else:
