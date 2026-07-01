@@ -16,7 +16,6 @@ from pathlib import Path
 
 CACHE_TTL_SECONDS = 90
 FETCH_TIMEOUT_SECONDS = 14
-BASELINE_TOKENS = 12000
 CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
 STATE_DB = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -347,11 +346,10 @@ def tail_lines(path: Path, max_bytes: int = CONTEXT_TAIL_BYTES) -> list[bytes]:
 
 
 def context_used_percent(tokens_in_context: int, context_window: int) -> int:
-    if context_window <= BASELINE_TOKENS:
+    if context_window <= 0:
         return 0
-    effective_window = context_window - BASELINE_TOKENS
-    used = max(0, tokens_in_context - BASELINE_TOKENS)
-    return int(math.floor((min(used, effective_window) / effective_window) * 100.0 + 0.5))
+    used = max(0, min(tokens_in_context, context_window))
+    return int(math.floor((used / context_window) * 100.0 + 0.5))
 
 
 def latest_context_state(cwd: str | None) -> dict | None:
@@ -445,8 +443,9 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0) 
         stale = tmux_style("fg=#e6c384", " stale")
 
     product_color = "#e6c384" if product == "CLAUDE" else "#727169"
+    product_label = f" {product}  " if product == "CODEX" else f" {product} "
     left = (
-        tmux_style(f"fg={product_color},bold", f" {product} ")
+        tmux_style(f"fg={product_color},bold", product_label)
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
         + percent_bar(
             context_used,
