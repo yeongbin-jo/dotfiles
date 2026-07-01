@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ok() { printf 'ok   %s\n' "$*"; }
+warn() { printf 'warn %s\n' "$*"; }
+fail() { printf 'fail %s\n' "$*"; }
+
+echo "remote work status"
+echo
+
+ask="$(defaults read com.apple.screensaver askForPassword 2>/dev/null || true)"
+delay="$(defaults read com.apple.screensaver askForPasswordDelay 2>/dev/null || true)"
+if [ "$ask" = "1" ] && [ "${delay:-999}" = "0" ]; then
+  ok "screen lock requires password immediately"
+else
+  warn "screen lock password delay is not immediate (askForPassword=${ask:-unset}, delay=${delay:-unset})"
+fi
+
+if launchctl print "gui/$(id -u)/com.yb.keepawake" >/dev/null 2>&1; then
+  ok "keep-awake LaunchAgent is loaded"
+else
+  warn "keep-awake LaunchAgent is not loaded"
+fi
+
+assertions="$(pmset -g assertions)"
+if printf '%s\n' "$assertions" | grep -q 'caffeinate.*PreventSystemSleep'; then
+  ok "caffeinate prevents system sleep"
+else
+  warn "caffeinate PreventSystemSleep assertion is missing"
+fi
+
+if nc -z localhost 22 >/dev/null 2>&1; then
+  ok "ssh port 22 is reachable locally"
+else
+  fail "ssh port 22 is not reachable locally"
+fi
+
+tailscale_bin=""
+for candidate in /Applications/Tailscale.app/Contents/MacOS/tailscale /opt/homebrew/bin/tailscale /usr/local/bin/tailscale; do
+  if [ -x "$candidate" ]; then
+    tailscale_bin="$candidate"
+    break
+  fi
+done
+
+if [ -n "$tailscale_bin" ]; then
+  ts_state="$("$tailscale_bin" status --json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("BackendState","unknown")); print((d.get("Self") or {}).get("DNSName",""))' 2>/dev/null || true)"
+  state="$(printf '%s\n' "$ts_state" | sed -n '1p')"
+  dns="$(printf '%s\n' "$ts_state" | sed -n '2p')"
+  if [ "$state" = "Running" ]; then
+    ok "tailscale is running${dns:+ ($dns)}"
+  else
+    warn "tailscale state is ${state:-unknown}"
+  fi
+else
+  warn "tailscale CLI not found"
+fi
+
+warn "Apple Watch auto-unlock can immediately unlock the screen while the watch is nearby"
+
+auto_logout="$(defaults read /Library/Preferences/.GlobalPreferences com.apple.autologout.AutoLogOutDelay 2>/dev/null || true)"
+if [ -n "$auto_logout" ]; then
+  warn "auto logout is set to ${auto_logout}s"
+else
+  ok "auto logout is not set"
+fi

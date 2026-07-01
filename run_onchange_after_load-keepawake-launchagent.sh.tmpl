@@ -1,0 +1,21 @@
+#!/bin/sh
+# keep-awake LaunchAgent loader
+# os: {{ .chezmoi.os }}
+# plist: com.yb.keepawake.plist v1
+set -e
+
+{{- if eq .chezmoi.os "darwin" }}
+PLIST="$HOME/Library/LaunchAgents/com.yb.keepawake.plist"
+LABEL="com.yb.keepawake"
+DOMAIN="gui/$(id -u)"
+
+[ -f "$PLIST" ] || exit 0
+
+launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+echo "[keepawake] loaded $LABEL"
+{{- else }}
+echo "[keepawake] skipped on non-darwin"
+{{- end }}
