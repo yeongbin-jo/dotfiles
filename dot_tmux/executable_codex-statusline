@@ -249,7 +249,9 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
             continue
         seen.add(current)
         for child_pid, command in children_by_parent.get(current, []):
-            if needle in command:
+            executable = command.split(None, 1)[0]
+            executable_name = os.path.basename(executable)
+            if needle in command or executable_name == needle:
                 return True
             pending.append(child_pid)
     return False
@@ -258,7 +260,7 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
 def is_claude_command(command: str | None, pane_pid: int | None = None) -> bool:
     if command and (command == "claude" or command.startswith("claude-") or command.startswith("claude_")):
         return True
-    return process_tree_contains(pane_pid, "/claude")
+    return process_tree_contains(pane_pid, "claude")
 
 
 def context_bar_color(used: int) -> str:
