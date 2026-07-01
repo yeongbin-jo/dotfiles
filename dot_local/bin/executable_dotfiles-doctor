@@ -187,8 +187,19 @@ else
   warn "Claude settings.json is missing"
 fi
 
+if [ -x "$HOME/.local/bin/obsidian-vault" ]; then
+  ok "Obsidian vault helper is installed"
+  if "$HOME/.local/bin/obsidian-vault" doctor >/dev/null 2>&1; then
+    ok "Obsidian vault is configured"
+  else
+    warn "Obsidian vault is not fully configured"
+  fi
+else
+  warn "Obsidian vault helper is missing"
+fi
+
 echo
-info "manual checks may still be required for GUI permissions: Tailscale login, Karabiner permissions, Apple Watch unlock"
+info "manual checks may still be required for GUI permissions: Tailscale login, Karabiner permissions, Apple Watch unlock, Obsidian account/plugins"
 printf 'summary: %s ok, %s warn, %s fail\n' "$ok_count" "$warn_count" "$fail_count"
 
 [ "$fail_count" -eq 0 ]

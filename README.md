@@ -13,7 +13,7 @@ secrets with [age](https://age-encryption.org) encryption.
 | `dot_gitconfig.tmpl` | `~/.gitconfig` | delta pager, guarded by `lookPath` |
 | `dot_config/ghostty/config` | `~/.config/ghostty/config` | Ghostty terminal |
 | `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
-| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-for-remote`) |
+| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-for-remote`, `obsidian-vault`) |
 | `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | editor and terminal session config |
 
 `iterm2.json` and `macos.sh` are kept for reference and **not** deployed (`.chezmoiignore`d).
@@ -56,3 +56,19 @@ hostnames, tailnet names, keys, or account-specific secrets in this repository.
 Use `remote-work-status` to verify that SSH, Tailscale, screen-lock policy, and
 the keep-awake LaunchAgent are ready. Use `lock-for-remote` when leaving the
 machine physically locked but available for SSH/tmux work.
+
+## Obsidian Vault
+
+The Obsidian vault is managed as a private Git repository, not in this public
+dotfiles repository. The helper reads its path and remote from
+`~/.config/obsidian-agent/config`, which is age-encrypted in chezmoi.
+
+```sh
+obsidian-vault init
+obsidian-vault status
+obsidian-vault sync
+```
+
+Agents should edit notes inside `$(obsidian-vault path)` and use
+`obsidian-vault sync` after intentional changes. GUI-only Obsidian account and
+plugin permissions are still manual.

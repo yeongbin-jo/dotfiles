@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG="$HOME/.config/obsidian-agent/config"
+if [ -r "$CONFIG" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
+
+VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
+VAULT_REMOTE="${OBSIDIAN_VAULT_REMOTE:-}"
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+need_remote() {
+  [ -n "$VAULT_REMOTE" ] || die "OBSIDIAN_VAULT_REMOTE is not configured"
+}
+
+ensure_repo() {
+  [ -d "$VAULT_PATH/.git" ] || die "vault is not a git repository: $VAULT_PATH"
+}
+
+configure_obsidian() {
+  mkdir -p "$HOME/Library/Application Support/obsidian"
+  python3 - "$VAULT_PATH" "$HOME/Library/Application Support/obsidian/obsidian.json" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+vault_path = pathlib.Path(sys.argv[1]).expanduser().resolve()
+config_path = pathlib.Path(sys.argv[2])
+try:
+    data = json.loads(config_path.read_text())
+    if not isinstance(data, dict):
+        data = {}
+except FileNotFoundError:
+    data = {}
+
+vaults = data.setdefault("vaults", {})
+key = hashlib.sha1(str(vault_path).encode("utf-8")).hexdigest()[:16]
+for vault in vaults.values():
+    if isinstance(vault, dict):
+        vault.pop("open", None)
+vaults[key] = {"path": str(vault_path), "ts": 0, "open": True}
+
+tmp = config_path.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+tmp.replace(config_path)
+print(str(vault_path))
+PY
+}
+
+cmd="${1:-status}"
+case "$cmd" in
+  path)
+    printf '%s\n' "$VAULT_PATH"
+    ;;
+
+  init)
+    need_remote
+    if [ -d "$VAULT_PATH/.git" ]; then
+      git -C "$VAULT_PATH" remote set-url origin "$VAULT_REMOTE"
+    elif [ -e "$VAULT_PATH" ] && [ "$(find "$VAULT_PATH" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')" != "0" ]; then
+      die "refusing to clone into non-empty non-git directory: $VAULT_PATH"
+    else
+      mkdir -p "$(dirname "$VAULT_PATH")"
+      git clone "$VAULT_REMOTE" "$VAULT_PATH"
+    fi
+    configure_obsidian >/dev/null
+    git -C "$VAULT_PATH" status --short --branch
+    ;;
+
+  configure)
+    [ -d "$VAULT_PATH" ] || die "vault path does not exist: $VAULT_PATH"
+    configure_obsidian >/dev/null
+    ;;
+
+  status)
+    ensure_repo
+    git -C "$VAULT_PATH" status --short --branch
+    ;;
+
+  sync)
+    ensure_repo
+    need_remote
+    git -C "$VAULT_PATH" remote set-url origin "$VAULT_REMOTE"
+    if ! git -C "$VAULT_PATH" diff --quiet --ignore-submodules -- ||
+       ! git -C "$VAULT_PATH" diff --cached --quiet --ignore-submodules --; then
+      git -C "$VAULT_PATH" add -A
+      git -C "$VAULT_PATH" commit -m "vault sync: $(date '+%Y-%m-%d %H:%M:%S')"
+    fi
+    git -C "$VAULT_PATH" pull --rebase --autostash
+    git -C "$VAULT_PATH" push
+    ;;
+
+  doctor)
+    printf 'vault path: %s\n' "$VAULT_PATH"
+    [ -n "$VAULT_REMOTE" ] && printf 'remote: configured\n' || printf 'remote: missing\n'
+    if [ -d "$VAULT_PATH/.git" ]; then
+      git -C "$VAULT_PATH" status --short --branch
+    elif [ -d "$VAULT_PATH" ]; then
+      printf 'warn vault path exists but is not a git repository\n'
+    else
+      printf 'warn vault path missing\n'
+    fi
+    ;;
+
+  open)
+    [ -d "$VAULT_PATH" ] || die "vault path does not exist: $VAULT_PATH"
+    configure_obsidian >/dev/null
+    open -a Obsidian "$VAULT_PATH" >/dev/null 2>&1 || open -a Obsidian
+    ;;
+
+  *)
+    cat <<'EOF'
+usage: obsidian-vault <command>
+
+commands:
+  init       clone/configure the vault on this machine
+  configure update Obsidian's local vault registry
+  status    show git status
+  sync      commit local changes, pull --rebase, push
+  doctor    show configuration and repository state
+  path      print the vault path
+  open      open the vault in Obsidian
+EOF
+    exit 2
+    ;;
+esac

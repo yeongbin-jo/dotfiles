@@ -16,6 +16,7 @@ brew "zsh-syntax-highlighting"
 
 # GUI utilities
 cask "karabiner-elements"
+cask "obsidian"
 
 # Not brew-managed (install separately):
 #   oh-my-zsh   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
