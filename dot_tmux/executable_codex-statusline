@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import re
 import select
 import shutil
 import sqlite3
@@ -178,6 +179,23 @@ def tmux_style(style: str, text: str) -> str:
     return f"#[{style}]{text}#[default]"
 
 
+TMUX_STYLE_RE = re.compile(r"#\[[^\]]*\]")
+
+
+def visible_width(text: str) -> int:
+    plain = TMUX_STYLE_RE.sub("", text)
+    width = 0
+    for ch in plain:
+        codepoint = ord(ch)
+        if ch == "\ufe0f":
+            continue
+        if codepoint >= 0x1F300:
+            width += 2
+        else:
+            width += 1
+    return width
+
+
 def countdown_text(seconds: int) -> str:
     if seconds <= 0:
         return "now"
@@ -323,7 +341,7 @@ def latest_context_state(cwd: str | None) -> dict | None:
     return None
 
 
-def render_line(state: dict, context: dict | None) -> str:
+def render_line(state: dict, context: dict | None, columns: int = 0) -> str:
     remaining = int(state["remaining_percent"])
     resets_at = int(state["resets_at"])
     seconds = resets_at - int(time.time())
@@ -333,24 +351,24 @@ def render_line(state: dict, context: dict | None) -> str:
     if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
         stale = tmux_style("fg=#e6c384", " stale")
 
-    return (
+    context_remaining = int(context["remaining_percent"]) if context else 100
+    left = (
         tmux_style("fg=#7e9cd8,bold", " CODEX ")
-        + (
-            tmux_style("fg=#dcd7ba", "CONTEXT ")
-            + percent_bar(
-                int(context["remaining_percent"]),
-                context_bar_color(int(context["remaining_percent"])),
-            )
-            + "  "
-            if context
-            else ""
+        + tmux_style("fg=#dcd7ba", "CONTEXT ")
+        + percent_bar(
+            context_remaining,
+            context_bar_color(context_remaining),
         )
-        + tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
+    )
+    right = (
+        tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
         + tmux_style("fg=#c8c093", "🗓️ " + timer)
         + " "
         + percent_bar(remaining, weekly_bar_color(remaining))
         + stale
     )
+    pad = columns - visible_width(left) - visible_width(right) - 2 if columns else 0
+    return left + " " * max(2, pad) + right
 
 
 def refresh(lock_held: bool = False) -> int:
@@ -389,11 +407,17 @@ def print_status() -> int:
     now = int(time.time())
     fetched_at = int(state.get("fetched_at") or 0)
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    columns = 0
     if len(args) >= 2:
         command, cwd = args[0], args[1]
         if not is_codex_command(command):
             print("")
             return 0
+        if len(args) >= 3:
+            try:
+                columns = int(args[2])
+            except ValueError:
+                columns = 0
     else:
         cwd = args[0] if args else None
     context = latest_context_state(cwd)
@@ -402,7 +426,7 @@ def print_status() -> int:
         start_background_refresh()
 
     if "remaining_percent" in state and "resets_at" in state:
-        print(render_line(state, context))
+        print(render_line(state, context, columns))
     elif state.get("line"):
         print(state["line"])
     else:

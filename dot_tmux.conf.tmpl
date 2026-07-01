@@ -98,7 +98,7 @@ set -ga status-right '   #[fg=#7e9cd8,bold]%H:%M #[fg=#54546d]%m-%d '
 
 # ── Codex 전용 보조 상태줄 ──
 # status는 항상 2줄로 고정하고, 두 번째 줄의 내용만 활성 pane이 Codex일 때 표시한다.
-set -g 'status-format[1]' ' #(~/.tmux/codex-statusline "#{pane_current_command}" "#{pane_current_path}")'
+set -g 'status-format[1]' ' #(~/.tmux/codex-statusline "#{pane_current_command}" "#{pane_current_path}" "#{client_width}")'
 
 # ── 패널 경계 / 메시지 / 카피모드 ──
 set -g pane-border-style        "fg=#363646"
