@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -394,6 +395,10 @@ def claude_project_dir(cwd: str | None) -> Path | None:
 
 
 def latest_claude_state(cwd: str | None) -> dict | None:
+    cached = latest_claude_cache_state(cwd)
+    if cached:
+        return cached
+
     project_dir = claude_project_dir(cwd)
     if not project_dir or not project_dir.exists():
         return None
@@ -434,6 +439,29 @@ def latest_claude_state(cwd: str | None) -> dict | None:
     return None
 
 
+def claude_cache_key(cwd: str) -> str:
+    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
+
+
+def latest_claude_cache_state(cwd: str | None) -> dict | None:
+    cache_root = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
+    paths = []
+    if cwd:
+        paths.append(cache_root / f"{claude_cache_key(cwd)}.json")
+    paths.append(cache_root / "latest.json")
+
+    for path in paths:
+        try:
+            state = json.loads(path.read_text())
+        except Exception:
+            continue
+        updated_at = int(state.get("updated_at") or 0)
+        if not updated_at or time.time() - updated_at > CACHE_TTL_SECONDS * 10:
+            continue
+        return state
+    return None
+
+
 def render_line(product: str, state: dict, context_used: int, columns: int = 0) -> str:
     remaining = int(state["remaining_percent"])
     resets_at = int(state["resets_at"])
@@ -471,6 +499,16 @@ def render_claude_line(cwd: str | None, columns: int = 0) -> str:
         context_used = 0
     else:
         context_used = int(state.get("context_used_percent") or 0)
+
+    weekly_remaining = state.get("weekly_remaining_percent") if state else None
+    resets_at = state.get("weekly_resets_at") if state else None
+    if weekly_remaining is not None and resets_at is not None:
+        line_state = {
+            "remaining_percent": int(weekly_remaining),
+            "resets_at": int(resets_at),
+            "fetched_at": int(state.get("updated_at") or 0),
+        }
+        return render_line("CLAUDE", line_state, context_used, columns)
 
     return (
         tmux_style("fg=#e6c384,bold", " CLAUDE ")
