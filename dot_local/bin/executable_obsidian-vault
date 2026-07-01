@@ -7,6 +7,12 @@ if [ -r "$CONFIG" ]; then
   . "$CONFIG"
 fi
 
+LIVESYNC_CONFIG="$HOME/.config/obsidian-agent/livesync"
+if [ -r "$LIVESYNC_CONFIG" ]; then
+  # shellcheck disable=SC1090
+  . "$LIVESYNC_CONFIG"
+fi
+
 VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
 VAULT_REMOTE="${OBSIDIAN_VAULT_REMOTE:-}"
 
@@ -54,6 +60,70 @@ print(str(vault_path))
 PY
 }
 
+configure_livesync() {
+  [ -d "$VAULT_PATH/.obsidian/plugins/obsidian-livesync" ] || die "LiveSync plugin is not installed in vault"
+  [ -n "${OBSIDIAN_LIVESYNC_URI:-}" ] || die "OBSIDIAN_LIVESYNC_URI is not configured"
+  [ -n "${OBSIDIAN_LIVESYNC_USER:-}" ] || die "OBSIDIAN_LIVESYNC_USER is not configured"
+  [ -n "${OBSIDIAN_LIVESYNC_PASSWORD:-}" ] || die "OBSIDIAN_LIVESYNC_PASSWORD is not configured"
+  [ -n "${OBSIDIAN_LIVESYNC_DBNAME:-}" ] || die "OBSIDIAN_LIVESYNC_DBNAME is not configured"
+  [ -n "${OBSIDIAN_LIVESYNC_PASSPHRASE:-}" ] || die "OBSIDIAN_LIVESYNC_PASSPHRASE is not configured"
+
+  data_file="$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json"
+  if [ -f "$data_file" ] && [ "${1:-}" != "--force" ]; then
+    printf 'LiveSync data already exists: %s\n' "$data_file"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$data_file")"
+  export OBSIDIAN_LIVESYNC_URI
+  export OBSIDIAN_LIVESYNC_USER
+  export OBSIDIAN_LIVESYNC_PASSWORD
+  export OBSIDIAN_LIVESYNC_DBNAME
+  export OBSIDIAN_LIVESYNC_PASSPHRASE
+  python3 - "$data_file" "$(hostname -s)" <<'PY'
+import json
+import os
+import pathlib
+import sys
+
+data_file = pathlib.Path(sys.argv[1])
+device = sys.argv[2]
+
+config = {
+    "remoteType": "COUCHDB",
+    "couchDB_URI": os.environ["OBSIDIAN_LIVESYNC_URI"].rstrip("/"),
+    "couchDB_USER": os.environ["OBSIDIAN_LIVESYNC_USER"],
+    "couchDB_PASSWORD": os.environ["OBSIDIAN_LIVESYNC_PASSWORD"],
+    "couchDB_DBNAME": os.environ["OBSIDIAN_LIVESYNC_DBNAME"],
+    "useRequestAPI": False,
+    "couchDB_CustomHeaders": "",
+    "liveSync": True,
+    "syncOnSave": True,
+    "syncOnStart": True,
+    "syncOnFileOpen": True,
+    "syncOnEditorSave": True,
+    "periodicReplication": False,
+    "periodicReplicationInterval": 60,
+    "keepReplicationActiveInBackground": True,
+    "readChunksOnline": True,
+    "encrypt": True,
+    "passphrase": os.environ["OBSIDIAN_LIVESYNC_PASSPHRASE"],
+    "E2EEAlgorithm": "v2",
+    "usePathObfuscation": False,
+    "useIgnoreFiles": True,
+    "ignoreFiles": ".gitignore",
+    "syncInternalFiles": False,
+    "deviceAndVaultName": device,
+    "isConfigured": True,
+    "settingVersion": 10,
+}
+
+data_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+data_file.chmod(0o600)
+print(str(data_file))
+PY
+}
+
 cmd="${1:-status}"
 case "$cmd" in
   path)
@@ -71,6 +141,9 @@ case "$cmd" in
       git clone "$VAULT_REMOTE" "$VAULT_PATH"
     fi
     configure_obsidian >/dev/null
+    if [ -r "$LIVESYNC_CONFIG" ] && [ ! -f "$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json" ]; then
+      configure_livesync >/dev/null
+    fi
     git -C "$VAULT_PATH" status --short --branch
     ;;
 
@@ -97,6 +170,10 @@ case "$cmd" in
     git -C "$VAULT_PATH" push
     ;;
 
+  livesync-configure)
+    configure_livesync "${2:-}"
+    ;;
+
   doctor)
     printf 'vault path: %s\n' "$VAULT_PATH"
     [ -n "$VAULT_REMOTE" ] && printf 'remote: configured\n' || printf 'remote: missing\n'
@@ -106,6 +183,13 @@ case "$cmd" in
       printf 'warn vault path exists but is not a git repository\n'
     else
       printf 'warn vault path missing\n'
+    fi
+    if [ -f "$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json" ]; then
+      printf 'livesync: configured\n'
+    elif [ -d "$VAULT_PATH/.obsidian/plugins/obsidian-livesync" ]; then
+      printf 'livesync: plugin installed, local config missing\n'
+    else
+      printf 'livesync: plugin missing\n'
     fi
     ;;
 
@@ -122,6 +206,8 @@ usage: obsidian-vault <command>
 commands:
   init       clone/configure the vault on this machine
   configure update Obsidian's local vault registry
+  livesync-configure [--force]
+             write local-only Self-hosted LiveSync settings
   status    show git status
   sync      commit local changes, pull --rebase, push
   doctor    show configuration and repository state

@@ -1,0 +1,22 @@
+#!/bin/sh
+# obsidian Git backup LaunchAgent loader
+# os: {{ .chezmoi.os }}
+# machine: {{ .machine }}
+# plist: com.yb.obsidian-vault-backup.plist v1
+set -e
+
+{{- if and (eq .chezmoi.os "darwin") (eq .machine "m5-pro") }}
+PLIST="$HOME/Library/LaunchAgents/com.yb.obsidian-vault-backup.plist"
+LABEL="com.yb.obsidian-vault-backup"
+DOMAIN="gui/$(id -u)"
+
+[ -f "$PLIST" ] || exit 0
+
+launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+echo "[obsidian-vault-backup] loaded $LABEL"
+{{- else }}
+echo "[obsidian-vault-backup] skipped on non-primary machine"
+{{- end }}

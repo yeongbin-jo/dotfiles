@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${OBSIDIAN_BACKUP_FORCE:-}" != "1" ] && [ "$(hostname -s)" != "m5-pro" ]; then
+  exit 0
+fi
+
+LOG_DIR="$HOME/Library/Logs"
+LOG_FILE="$LOG_DIR/obsidian-vault-backup.log"
+LOCK_DIR="${TMPDIR:-/tmp}/obsidian-vault-backup.lock"
+
+mkdir -p "$LOG_DIR"
+
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  exit 0
+fi
+trap 'rmdir "$LOCK_DIR"' EXIT
+
+{
+  printf '[%s] start\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  "$HOME/.local/bin/obsidian-vault" sync
+  printf '[%s] ok\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+} >>"$LOG_FILE" 2>&1
