@@ -9,7 +9,6 @@ import sqlite3
 import subprocess
 import sys
 import time
-import hashlib
 from pathlib import Path
 
 
@@ -18,7 +17,7 @@ FETCH_TIMEOUT_SECONDS = 14
 BASELINE_TOKENS = 12000
 CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
 STATE_DB = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
-CLAUDE_CACHE_DIR = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
 def cache_dir() -> Path:
@@ -385,25 +384,51 @@ def latest_context_state(cwd: str | None) -> dict | None:
     return None
 
 
-def claude_cache_key(cwd: str) -> str:
-    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
+def claude_project_dir(cwd: str | None) -> Path | None:
+    if not cwd:
+        return None
+    sanitized = cwd.replace("/", "-")
+    return CLAUDE_PROJECTS_DIR / sanitized
 
 
 def latest_claude_state(cwd: str | None) -> dict | None:
-    paths = []
-    if cwd:
-        paths.append(CLAUDE_CACHE_DIR / f"{claude_cache_key(cwd)}.json")
-    paths.append(CLAUDE_CACHE_DIR / "latest.json")
+    project_dir = claude_project_dir(cwd)
+    if not project_dir or not project_dir.exists():
+        return None
 
-    for path in paths:
-        try:
-            state = json.loads(path.read_text())
-        except Exception:
-            continue
-        updated_at = int(state.get("updated_at") or 0)
-        if updated_at and time.time() - updated_at > CACHE_TTL_SECONDS * 10:
-            state["stale"] = True
-        return state
+    try:
+        transcript_paths = sorted(
+            (p for p in project_dir.glob("*.jsonl") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+
+    for transcript_path in transcript_paths[:3]:
+        for raw_line in reversed(tail_lines(transcript_path)):
+            try:
+                event = json.loads(raw_line)
+            except Exception:
+                continue
+            message = event.get("message") or {}
+            usage = message.get("usage") or {}
+            if not usage:
+                continue
+            model = str(message.get("model") or "")
+            context_window = 1_000_000 if "1M" in model or "1m" in model else 200_000
+            used_tokens = (
+                int(usage.get("input_tokens") or 0)
+                + int(usage.get("cache_creation_input_tokens") or 0)
+                + int(usage.get("cache_read_input_tokens") or 0)
+                + int(usage.get("output_tokens") or 0)
+            )
+            return {
+                "context_used_percent": int(
+                    math.floor((min(used_tokens, context_window) / context_window) * 100.0 + 0.5)
+                ),
+                "updated_at": int(transcript_path.stat().st_mtime),
+            }
     return None
 
 
@@ -417,7 +442,7 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0) 
     if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
         stale = tmux_style("fg=#e6c384", " stale")
 
-    product_color = "#e6c384" if product == "CLAUDE" else "#c0c0c0"
+    product_color = "#e6c384" if product == "CLAUDE" else "#727169"
     left = (
         tmux_style(f"fg={product_color},bold", f" {product} ")
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
@@ -440,28 +465,15 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0) 
 def render_claude_line(cwd: str | None, columns: int = 0) -> str:
     state = latest_claude_state(cwd)
     if not state:
-        return tmux_style("fg=#727169", " CLAUDE status loading... ")
+        context_used = 0
+    else:
+        context_used = int(state.get("context_used_percent") or 0)
 
-    weekly_remaining = state.get("weekly_remaining_percent")
-    resets_at = state.get("weekly_resets_at")
-    if weekly_remaining is None or resets_at is None:
-        left = (
-            tmux_style("fg=#e6c384,bold", " CLAUDE ")
-            + tmux_style("fg=#dcd7ba", "CONTEXT ")
-            + percent_bar(
-                int(state.get("context_used_percent") or 0),
-                context_bar_color(int(state.get("context_used_percent") or 0)),
-            )
-        )
-        stale = tmux_style("fg=#e6c384", " stale") if state.get("stale") else ""
-        return left + stale
-
-    line_state = {
-        "remaining_percent": int(weekly_remaining),
-        "resets_at": int(resets_at),
-        "fetched_at": int(state.get("updated_at") or 0),
-    }
-    return render_line("CLAUDE", line_state, int(state.get("context_used_percent") or 0), columns)
+    return (
+        tmux_style("fg=#e6c384,bold", " CLAUDE ")
+        + tmux_style("fg=#dcd7ba", "CONTEXT ")
+        + percent_bar(context_used, context_bar_color(context_used))
+    )
 
 
 def refresh(lock_held: bool = False) -> int:
