@@ -1,160 +1,87 @@
-#!/usr/bin/env python3
-import hashlib
-import json
-import os
-import subprocess
-import sys
-import time
-from pathlib import Path
+#!/usr/bin/env bash
+# ~/.claude/statusline.sh — Claude Code status line (chezmoi 관리)
+# stdin = 세션 JSON
+#   좌: 모델 · 디렉터리 · git 브랜치 · 컨텍스트 사용량 게이지(사용↑ 하늘→파랑→검붉→빨강)
+#   우(터미널 오른쪽 끝 정렬): 🗓️ Nd HH:mm:ss 주간 리셋 카운트다운 + 잔여량 프로그레스 바
+#   ※ 카운트다운 실시간 틱하려면 settings.json 에 "refreshInterval": 1 필요
+#   ※ 우측 정렬은 Claude Code 가 COLUMNS env 를 주입하는 v2.1.153+ 필요 (미주입 시 좌측 fallback)
+python3 -c '
+import sys, json, os, re, subprocess, time
 
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+model = (d.get("model") or {}).get("display_name") or "?"
+cwd = (d.get("workspace") or {}).get("current_dir") or d.get("cwd") or os.getcwd()
+base = os.path.basename(cwd.rstrip("/")) or cwd
+branch = ""
+try:
+    branch = subprocess.run(["git", "-C", cwd, "branch", "--show-current"],
+                            capture_output=True, text=True, timeout=1).stdout.strip()
+except Exception:
+    pass
 
-def cache_dir() -> Path:
-    root = os.environ.get("TMPDIR") or "/tmp"
-    path = Path(root) / "claude-tmux-statusline"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+c = lambda code, s: "\x1b[%sm%s\x1b[0m" % (code, s)
 
+def ctx_seg(used, width=14):   # 컨텍스트 사용량 바 — 우측 잔여량 바와 동일 디자인, 색만 사용량 그라데이션(사용↑: 하늘117→파랑33→검붉124→빨강196)
+    used = max(0, min(100, round(used)))
+    txt = ("%d%% " % used).rjust(width)
+    filled = max(0, min(width, round(width * used / 100)))
+    col = "153" if used < 40 else "111" if used < 65 else "131" if used < 82 else "210"   # 파스텔: 연하늘→연파랑→더스티레드→살몬
+    return ("\x1b[38;5;245m[\x1b[0m" +
+            "\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
+            "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:] +
+            "\x1b[38;5;245m]\x1b[0m")
 
-def clamp_percent(value) -> int:
-    try:
-        return int(round(min(100.0, max(0.0, float(value)))))
-    except Exception:
-        return 0
+left = [c("38;5;75", model), c("38;5;252", base)]
+if branch:
+    left.append(c("38;5;114", "⎇ " + branch))
+cw = d.get("context_window") or {}
+cu = cw.get("used_percentage")
+if cu is not None:
+    left.append(ctx_seg(cu))
+left_s = "  ".join(left)
 
-
-def cache_key(cwd: str) -> str:
-    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
-
-
-def write_cache(cwd: str, state: dict) -> None:
-    path = cache_dir() / f"{cache_key(cwd)}.json"
-    latest = cache_dir() / "latest.json"
-    payload = json.dumps(state, separators=(",", ":"))
-    for target in (path, latest):
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(payload)
-        os.replace(tmp, target)
-
-
-def ansi(code: str, text: str) -> str:
-    return f"\x1b[{code}m{text}\x1b[0m"
-
-
-def context_bar_color(used: int) -> str:
-    if used < 40:
-        return "153"
-    if used < 65:
-        return "111"
-    if used < 82:
-        return "131"
-    return "210"
-
-
-def weekly_bar_color(remaining: int) -> str:
-    if remaining > 50:
-        return "114"
-    if remaining > 30:
-        return "178"
-    if remaining > 12:
-        return "208"
-    return "167"
-
-
-def bar(value: int, color: str, width: int = 14) -> str:
-    value = max(0, min(100, int(round(value))))
-    text = f"{value}% ".rjust(width)
-    filled = max(0, min(width, round(width * value / 100)))
-    return (
-        "\x1b[38;5;245m[\x1b[0m"
-        + f"\x1b[48;5;{color};38;5;235;1m{text[:filled]}\x1b[0m"
-        + f"\x1b[48;5;237;38;5;250m{text[filled:]}\x1b[0m"
-        + "\x1b[38;5;245m]\x1b[0m"
-    )
-
-
-def countdown_text(seconds: int) -> str:
-    if seconds <= 0:
+def fmt_countdown(secs):   # Nd HH:mm:ss (하루 미만이면 HH:mm:ss)
+    if secs <= 0:
         return "now"
-    days, rem = divmod(seconds, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
-    if days:
-        return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
-    return f"{hours:02}:{minutes:02}:{secs:02}"
+    dd, r = divmod(secs, 86400)
+    h, r = divmod(r, 3600)
+    m, s = divmod(r, 60)
+    return "%dd %02d:%02d:%02d" % (dd, h, m, s) if dd else "%02d:%02d:%02d" % (h, m, s)
 
+def bar(remaining, width=14):   # 잔여율 게이지 — 퍼센트 텍스트를 바 안 우측 정렬로 오버레이
+    txt = ("%d%% " % remaining).rjust(width)
+    filled = max(0, min(width, round(width * remaining / 100)))
+    col = "114" if remaining > 50 else "178" if remaining > 20 else "167"
+    return ("\x1b[38;5;245m[\x1b[0m" +
+            "\x1b[48;5;%s;38;5;235;1m%s\x1b[0m" % (col, txt[:filled]) +
+            "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:] +
+            "\x1b[38;5;245m]\x1b[0m")
 
-def current_branch(cwd: str) -> str:
+right_s = ""
+sd = (d.get("rate_limits") or {}).get("seven_day") or {}
+up = sd.get("used_percentage")
+if up is not None:
+    remaining = max(0, min(100, 100 - round(up)))
+    ra = sd.get("resets_at")
+    timer = "\U0001F5D3\uFE0F " + (fmt_countdown(int(ra - time.time())) if ra else "?")
+    right_s = c("38;5;250", timer) + "  " + bar(remaining)
+
+if not right_s:
+    print(left_s)
+else:
+    ansi = re.compile("\x1b\\[[0-9;]*m")
+    def vis(s):   # 표시 폭: ANSI 제거, 이모지=2칸, VS16=0칸
+        s = ansi.sub("", s)
+        return sum(0 if ch == "\uFE0F" else 2 if ord(ch) >= 0x1F300 else 1 for ch in s)
     try:
-        return subprocess.run(
-            ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=1,
-            check=False,
-        ).stdout.strip()
-    except Exception:
-        return ""
-
-
-def main() -> int:
-    try:
-        data = json.load(sys.stdin)
-    except Exception:
-        data = {}
-
-    cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or os.getcwd()
-    model = (data.get("model") or {}).get("display_name") or "Claude"
-    branch = current_branch(cwd)
-
-    context = data.get("context_window") or {}
-    used_context = clamp_percent(
-        context.get("used_percentage")
-        if context.get("used_percentage") is not None
-        else 100 - clamp_percent(context.get("remaining_percentage", 100))
-    )
-
-    seven_day = (data.get("rate_limits") or {}).get("seven_day") or {}
-    weekly_used = seven_day.get("used_percentage")
-    weekly_remaining = None
-    if weekly_used is not None:
-        weekly_remaining = max(0, min(100, 100 - clamp_percent(weekly_used)))
-
-    state = {
-        "cwd": cwd,
-        "model": model,
-        "branch": branch,
-        "context_used_percent": used_context,
-        "weekly_remaining_percent": weekly_remaining,
-        "weekly_resets_at": seven_day.get("resets_at"),
-        "updated_at": int(time.time()),
-    }
-    write_cache(cwd, state)
-
-    left = [
-        ansi("38;5;221;1", " CLAUDE "),
-        ansi("38;5;252", os.path.basename(cwd.rstrip("/")) or cwd),
-    ]
-    if branch:
-        left.append(ansi("38;5;114", "⎇ " + branch))
-    left.append(ansi("38;5;250", "CONTEXT ") + bar(used_context, context_bar_color(used_context)))
-
-    right = ""
-    if weekly_remaining is not None:
-        reset = seven_day.get("resets_at")
-        timer = countdown_text(int(reset - time.time())) if isinstance(reset, (int, float)) else "?"
-        right = (
-            ansi("38;5;250", "WEEKLY RESET ")
-            + ansi("38;5;221", "🗓️ " + timer)
-            + " "
-            + bar(weekly_remaining, weekly_bar_color(weekly_remaining))
-        )
-
-    if not right:
-        print("  ".join(left))
-    else:
-        print("  ".join(left) + "  " + right)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        cols = int(os.environ.get("COLUMNS") or 0)
+    except ValueError:
+        cols = 0
+    # CC UI 가 statusline 좌우에 자체 패딩을 둠 → COLUMNS 그대로 쓰면 … 잘림.
+    # ccstatusline 과 동일하게 6칸 예약 (full-width flex 모드의 검증된 마진)
+    pad = cols - vis(left_s) - vis(right_s) - 6 if cols else 0
+    print(left_s + " " * max(2, pad) + right_s)
+'
