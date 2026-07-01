@@ -14,6 +14,9 @@ brew "libpq"                   # psql client
 brew "zsh-autosuggestions"
 brew "zsh-syntax-highlighting"
 
+# GUI utilities
+cask "karabiner-elements"
+
 # Not brew-managed (install separately):
 #   oh-my-zsh   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 #   nvm         https://github.com/nvm-sh/nvm
