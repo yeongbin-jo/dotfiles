@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -u
+
+ok_count=0
+warn_count=0
+fail_count=0
+
+ok() { ok_count=$((ok_count + 1)); printf 'ok   %s\n' "$*"; }
+warn() { warn_count=$((warn_count + 1)); printf 'warn %s\n' "$*"; }
+fail() { fail_count=$((fail_count + 1)); printf 'fail %s\n' "$*"; }
+info() { printf 'info %s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+echo "dotfiles doctor"
+echo
+
+if have chezmoi; then
+  ok "chezmoi is installed"
+  source_dir="$(chezmoi source-path 2>/dev/null || printf '%s/.local/share/chezmoi' "$HOME")"
+else
+  fail "chezmoi is not installed"
+  source_dir="$HOME/.local/share/chezmoi"
+fi
+
+if [ -d "$source_dir/.git" ]; then
+  ok "chezmoi source is a git repository"
+  if git -C "$source_dir" diff --quiet --ignore-submodules -- 2>/dev/null &&
+     git -C "$source_dir" diff --cached --quiet --ignore-submodules -- 2>/dev/null; then
+    ok "chezmoi source has no tracked-file drift"
+  else
+    warn "chezmoi source has local tracked-file changes"
+  fi
+else
+  warn "chezmoi source is not a git repository ($source_dir)"
+fi
+
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ok "~/.local/bin is on PATH" ;;
+  *) warn "~/.local/bin is not on PATH in this shell" ;;
+esac
+
+if [ -r "$HOME/.config/chezmoi/key.txt" ]; then
+  ok "age key file exists"
+else
+  warn "age key file is missing; encrypted files will not apply"
+fi
+
+if [ -f "$source_dir/Brewfile" ]; then
+  if have brew; then
+    if brew bundle check --file="$source_dir/Brewfile" >/dev/null 2>&1; then
+      ok "Brewfile dependencies are installed"
+    else
+      warn "Brewfile dependencies are incomplete; run: brew bundle --file=$source_dir/Brewfile"
+    fi
+  else
+    warn "Homebrew is not installed"
+  fi
+else
+  warn "Brewfile not found in chezmoi source"
+fi
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  ask="$(defaults read com.apple.screensaver askForPassword 2>/dev/null || true)"
+  delay="$(defaults read com.apple.screensaver askForPasswordDelay 2>/dev/null || true)"
+  if [ "$ask" = "1" ] && [ "${delay:-999}" = "0" ]; then
+    ok "screen lock requires password immediately"
+  else
+    warn "screen lock password delay is not immediate"
+  fi
+
+  scroll="$(defaults read NSGlobalDomain com.apple.swipescrolldirection 2>/dev/null || true)"
+  if [ "$scroll" = "0" ]; then
+    ok "natural scroll is disabled"
+  else
+    warn "natural scroll is not disabled"
+  fi
+
+  if launchctl print "gui/$(id -u)/com.yb.keepawake" >/dev/null 2>&1; then
+    ok "keep-awake LaunchAgent is loaded"
+  else
+    warn "keep-awake LaunchAgent is not loaded"
+  fi
+
+  assertions="$(pmset -g assertions 2>/dev/null || true)"
+  if printf '%s\n' "$assertions" | grep -q 'caffeinate.*PreventSystemSleep'; then
+    ok "caffeinate prevents system sleep"
+  else
+    warn "caffeinate PreventSystemSleep assertion is missing"
+  fi
+
+  if [ -d /Applications/Karabiner-Elements.app ]; then
+    ok "Karabiner-Elements app is installed"
+  else
+    warn "Karabiner-Elements app is not installed"
+  fi
+
+  if have karabiner_cli; then
+    profile="$(karabiner_cli --show-current-profile-name 2>/dev/null || true)"
+    if [ -n "$profile" ]; then
+      ok "Karabiner current profile is available"
+    else
+      warn "Karabiner CLI is installed but profile is unavailable; open Karabiner-Elements and grant permissions"
+    fi
+  else
+    warn "karabiner_cli is not on PATH"
+  fi
+fi
+
+tailscale_bin=""
+for candidate in /Applications/Tailscale.app/Contents/MacOS/tailscale /opt/homebrew/bin/tailscale /usr/local/bin/tailscale; do
+  if [ -x "$candidate" ]; then
+    tailscale_bin="$candidate"
+    break
+  fi
+done
+if [ -n "$tailscale_bin" ]; then
+  ts_state="$("$tailscale_bin" status --json 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("BackendState","unknown"))' 2>/dev/null || true)"
+  if [ "$ts_state" = "Running" ]; then
+    ok "Tailscale is running"
+  else
+    warn "Tailscale state is ${ts_state:-unknown}; log in from the GUI if needed"
+  fi
+else
+  warn "Tailscale CLI not found"
+fi
+
+if nc -z localhost 22 >/dev/null 2>&1; then
+  ok "SSH port 22 is reachable locally"
+else
+  warn "SSH port 22 is not reachable locally"
+fi
+
+if [ -f /etc/ssh/sshd_config.d/99-key-only.conf ]; then
+  if grep -q '^PasswordAuthentication no' /etc/ssh/sshd_config.d/99-key-only.conf 2>/dev/null &&
+     grep -q '^KbdInteractiveAuthentication no' /etc/ssh/sshd_config.d/99-key-only.conf 2>/dev/null &&
+     grep -q '^PubkeyAuthentication yes' /etc/ssh/sshd_config.d/99-key-only.conf 2>/dev/null; then
+    ok "SSH key-only policy file is present"
+  else
+    warn "SSH key-only policy file exists but does not match expected settings"
+  fi
+else
+  warn "SSH key-only policy file is missing; configure it with administrator privileges"
+fi
+
+if [ -x "$HOME/.tmux/codex-statusline" ]; then
+  ok "tmux agent statusline helper is installed"
+else
+  warn "tmux agent statusline helper is missing"
+fi
+
+if [ -x "$HOME/.claude/statusline-wrapper.sh" ] && [ -x "$HOME/.claude/tmux-status-cache.py" ]; then
+  ok "Claude statusline wrapper and tmux cache helper are installed"
+else
+  warn "Claude statusline wrapper/cache helper is incomplete"
+fi
+
+if [ -r "$HOME/.claude/settings.json" ]; then
+  if python3 - "$HOME/.claude/settings.json" <<'PY' >/dev/null 2>&1
+import json, pathlib, sys
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+cmd = ((data.get("statusLine") or {}).get("command") or "")
+raise SystemExit(0 if cmd.endswith("/.claude/statusline-wrapper.sh") else 1)
+PY
+  then
+    ok "Claude statusLine is configured to use the wrapper"
+  else
+    warn "Claude statusLine is not configured to use the wrapper"
+  fi
+else
+  warn "Claude settings.json is missing"
+fi
+
+echo
+info "manual checks may still be required for GUI permissions: Tailscale login, Karabiner permissions, Apple Watch unlock"
+printf 'summary: %s ok, %s warn, %s fail\n' "$ok_count" "$warn_count" "$fail_count"
+
+[ "$fail_count" -eq 0 ]

@@ -1,7 +1,7 @@
 # dotfiles
 
 [chezmoi](https://chezmoi.io)-managed dotfiles for my Apple-Silicon Macs.
-One source, three machines — per-machine differences handled with Go templates,
+One source for personal Macs. Per-machine differences are handled with Go templates,
 secrets with [age](https://age-encryption.org) encryption.
 
 ## What's here
@@ -12,7 +12,9 @@ secrets with [age](https://age-encryption.org) encryption.
 | `encrypted_dot_zshrc.local.tmpl` | `~/.zshrc.local` | machine/secret shell config — **age-encrypted** |
 | `dot_gitconfig.tmpl` | `~/.gitconfig` | delta pager, guarded by `lookPath` |
 | `dot_config/ghostty/config` | `~/.config/ghostty/config` | Ghostty terminal |
-| `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | |
+| `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
+| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-for-remote`) |
+| `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | editor and terminal session config |
 
 `iterm2.json` and `macos.sh` are kept for reference and **not** deployed (`.chezmoiignore`d).
 
@@ -24,13 +26,33 @@ secrets with [age](https://age-encryption.org) encryption.
 - Tool-specific config guarded by `lookPath` (e.g. git's `delta`).
 - Secrets live in an age-encrypted file; the private key is **not** in this repo.
 
-## Fresh machine
+## Fresh Machine
 
 ```sh
 brew install chezmoi age
 # restore the age key to ~/.config/chezmoi/key.txt (from your password manager)
 chezmoi init --apply yeongbin-jo
-brew bundle --file=~/.local/share/chezmoi/Brewfile   # optional CLI tools
+brew bundle --file=~/.local/share/chezmoi/Brewfile
+dotfiles-doctor
 ```
 
 > chezmoi never runs `brew` on its own — package installs are always an explicit step.
+
+## Manual Gates
+
+Some setup cannot be safely automated from a public dotfiles repo:
+
+- Restore the age key from the password manager before applying encrypted files.
+- Sign in to Tailscale from the GUI and choose the correct tailnet.
+- Grant Karabiner-Elements the macOS permissions it requests.
+- Configure SSH key-only login with administrator privileges.
+- Decide whether Apple Watch auto-unlock should stay enabled on that machine.
+
+Run `dotfiles-doctor` after each step. It reports local state without embedding
+hostnames, tailnet names, keys, or account-specific secrets in this repository.
+
+## Remote Work Mode
+
+Use `remote-work-status` to verify that SSH, Tailscale, screen-lock policy, and
+the keep-awake LaunchAgent are ready. Use `lock-for-remote` when leaving the
+machine physically locked but available for SSH/tmux work.
