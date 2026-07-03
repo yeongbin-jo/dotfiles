@@ -1,0 +1,4 @@
+interface:
+  display_name: "Describe Spec"
+  short_description: "Summarize spec packages as mental models"
+  default_prompt: "Use $describe-spec to summarize the current branch's spec package as a concise mental model."

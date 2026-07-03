@@ -1,0 +1,4 @@
+interface:
+  display_name: "Describe Impl"
+  short_description: "Summarize branch implementation diffs"
+  default_prompt: "Use $describe-impl to summarize what the current branch actually implemented from the git diff."

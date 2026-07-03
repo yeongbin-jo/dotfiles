@@ -1,0 +1,4 @@
+interface:
+  display_name: "WT"
+  short_description: "Switch work context to an existing worktree"
+  default_prompt: "Use $wt to switch context to an existing git worktree by path or shorthand."
