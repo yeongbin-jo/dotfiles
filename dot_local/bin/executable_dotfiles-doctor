@@ -49,6 +49,28 @@ else
   warn "chezmoi source is not a git repository ($source_dir)"
 fi
 
+# Private chezmoi overlay (dotfiles-private) — a separate source that is easy to
+# forget to clone/apply, which silently drifts machine-to-machine. Surface it.
+priv_dir="$HOME/.local/share/chezmoi-private"
+if [ -d "$priv_dir/.git" ]; then
+  ok "private chezmoi overlay is cloned"
+  if git -C "$priv_dir" diff --quiet --ignore-submodules -- 2>/dev/null &&
+     git -C "$priv_dir" diff --cached --quiet --ignore-submodules -- 2>/dev/null; then
+    ok "private overlay has no uncommitted drift"
+  else
+    warn "private overlay has uncommitted changes; commit+push so other machines get them"
+  fi
+  if [ -n "$chezmoi_bin" ]; then
+    if [ -z "$("$chezmoi_bin" -S "$priv_dir" status 2>/dev/null)" ]; then
+      ok "private overlay is applied (no pending changes)"
+    else
+      warn "private overlay not fully applied; run: dotup (or chezmoi -S $priv_dir apply)"
+    fi
+  fi
+else
+  warn "private chezmoi overlay not cloned ($priv_dir); run: dotup"
+fi
+
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ok "~/.local/bin is on PATH" ;;
   *) warn "~/.local/bin is not on PATH in this shell" ;;
