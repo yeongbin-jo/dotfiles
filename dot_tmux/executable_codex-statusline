@@ -578,7 +578,8 @@ def print_status() -> int:
         print(render_claude_line(cwd, columns))
         return 0
 
-    context = latest_context_state(cwd)
+    logical_cwd = args[4] if len(args) >= 5 and args[4] else cwd
+    context = latest_context_state(logical_cwd)
     context_used = int(context["used_percent"]) if context else 0
 
     if now - fetched_at > CACHE_TTL_SECONDS:

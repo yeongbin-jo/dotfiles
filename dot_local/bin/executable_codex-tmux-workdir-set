@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+set -eu
+
+workdir="${1:-}"
+name="${2:-}"
+
+if [ -z "$workdir" ]; then
+  echo "usage: codex-tmux-workdir-set <workdir> [display-name]" >&2
+  exit 2
+fi
+
+if [ -z "${TMUX:-}" ]; then
+  exit 0
+fi
+
+if [ -z "$name" ]; then
+  name="$(git -C "$workdir" branch --show-current 2>/dev/null || true)"
+fi
+
+if [ -z "$name" ]; then
+  name="$(basename "$workdir")"
+fi
+
+target="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+
+if [ -z "$target" ]; then
+  target="${TMUX_PANE:-}"
+fi
+
+if [ -n "$target" ]; then
+  tmux set-option -p -q -t "$target" @codex_workdir "$workdir"
+  tmux set-option -p -q -t "$target" @codex_worktree_name "$name"
+else
+  tmux set-option -p -q @codex_workdir "$workdir"
+  tmux set-option -p -q @codex_worktree_name "$name"
+fi
+
+tmux rename-window "$name" 2>/dev/null || true

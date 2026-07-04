@@ -10,9 +10,17 @@ Switch the working context to an already-existing git worktree. In Codex there i
 - resolve the target worktree once
 - verify it is a registered git worktree
 - use that absolute path as `workdir` for subsequent tool calls
+- if running inside tmux, publish the logical worktree to tmux because tmux cannot infer Codex's per-tool `workdir`
 - state the active worktree path to the user
 
 Do not pretend that `cd` permanently changed the session. A plain shell `cd` only affects that one command.
+
+## Why tmux does not update automatically
+
+The managed tmux config normally names windows from `#{pane_current_path}`. Codex `exec_command.workdir`
+changes only the subprocess cwd for that one tool call; it does not change the interactive pane's
+shell cwd, so `#{pane_current_path}` remains the directory where Codex was launched. Therefore tmux
+cannot infer the Codex logical worktree unless the worktree switch publishes it explicitly.
 
 ## Workflow
 
@@ -41,12 +49,27 @@ The target must:
 
 For every subsequent `exec_command`, `apply_patch` target path, `view_image`, or file reference, use the resolved worktree path explicitly. Prefer absolute file paths for patches and final links.
 
-5. Verify and report:
+5. If running inside tmux, publish the logical worktree to tmux.
+
+Use the branch name when available; otherwise use the worktree directory basename:
+
+```bash
+name="$(git -C "$WORKTREE" branch --show-current 2>/dev/null)"
+[ -n "$name" ] || name="$(basename "$WORKTREE")"
+[ -n "$TMUX" ] && codex-tmux-workdir-set "$WORKTREE" "$name"
+```
+
+This writes pane-scoped tmux options (`@codex_workdir`, `@codex_worktree_name`) and renames the
+current window as a display hint. It does not change the Codex session cwd.
+
+6. Verify and report:
 
 ```bash
 pwd
 git branch --show-current
 git status --short --branch
+tmux display-message -p '#W #{pane_current_path}' 2>/dev/null || true
+tmux display-message -p '#{@codex_worktree_name} #{@codex_workdir}' 2>/dev/null || true
 ```
 
 Report one concise line:

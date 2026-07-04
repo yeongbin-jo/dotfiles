@@ -49,7 +49,7 @@ bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded ✓"
 #      브랜치/워크트리 이름은 치환 대상 아님(별칭 헬퍼 미경유).
 set -g  allow-rename off          # 프로그램(claude)의 OSC 타이틀 변경 무시
 setw -g automatic-rename on
-setw -g automatic-rename-format '#(p="#{pane_current_path}"; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi)'
+setw -g automatic-rename-format '#(n="#{@codex_worktree_name}"; if [ -n "$n" ]; then echo "$n"; else p="#{pane_current_path}"; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi; fi)'
 
 # ============================================================
 #  상태바 — 위쪽 + Kanagawa (미니멀: 배경블록 없음)
@@ -98,7 +98,7 @@ set -ga status-right '   #[fg=#7e9cd8,bold]%H:%M #[fg=#54546d]%m-%d '
 
 # ── agent 전용 보조 상태줄 ──
 # status는 항상 2줄로 고정하고, 두 번째 줄의 내용만 활성 pane이 Claude/Codex일 때 표시한다.
-set -g 'status-format[1]' ' #(~/.tmux/codex-statusline "#{pane_current_command}" "#{pane_current_path}" "#{client_width}" "#{pane_pid}")'
+set -g 'status-format[1]' ' #(~/.tmux/codex-statusline "#{pane_current_command}" "#{pane_current_path}" "#{client_width}" "#{pane_pid}" "#{@codex_workdir}")'
 
 # ── 패널 경계 / 메시지 / 카피모드 ──
 set -g pane-border-style        "fg=#363646"
