@@ -124,6 +124,28 @@ nydus() {
   esac
 }
 
+_clear_stale_codex_tmux_workdir() {
+  [ -n "${TMUX:-}" ] || return 0
+  [ -n "${TMUX_PANE:-}" ] || return 0
+  command -v tmux >/dev/null 2>&1 || return 0
+
+  local codex_workdir current_root codex_root
+  codex_workdir="$(tmux display-message -p -t "$TMUX_PANE" '#{@codex_workdir}' 2>/dev/null || true)"
+  [ -n "$codex_workdir" ] || return 0
+
+  current_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
+  codex_root="$(git -C "$codex_workdir" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$codex_workdir")"
+  [ "$current_root" != "$codex_root" ] || return 0
+
+  tmux set-option -p -q -u -t "$TMUX_PANE" @codex_workdir 2>/dev/null || true
+  tmux set-option -p -q -u -t "$TMUX_PANE" @codex_worktree_name 2>/dev/null || true
+  tmux set-window-option -q -t "$TMUX_PANE" automatic-rename on 2>/dev/null || true
+}
+
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd _clear_stale_codex_tmux_workdir
+add-zsh-hook chpwd _clear_stale_codex_tmux_workdir
+
 # ── 머신별/민감 설정 (장비 alias 등, age 암호화) ──
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
 

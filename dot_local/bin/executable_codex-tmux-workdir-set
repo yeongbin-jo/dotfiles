@@ -21,18 +21,30 @@ if [ -z "$name" ]; then
   name="$(basename "$workdir")"
 fi
 
-target="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)"
+target="${TMUX_PANE:-}"
+case "$target" in
+  %*) ;;
+  "") target="$(tmux display-message -p '#{pane_id}' 2>/dev/null || true)" ;;
+  *) target="%$target" ;;
+esac
 
-if [ -z "$target" ]; then
-  target="${TMUX_PANE:-}"
+pane_cwd=""
+if [ -n "$target" ]; then
+  pane_cwd="$(tmux display-message -p -t "$target" '#{pane_current_path}' 2>/dev/null || true)"
 fi
 
 if [ -n "$target" ]; then
-  tmux set-option -p -q -t "$target" @codex_workdir "$workdir"
-  tmux set-option -p -q -t "$target" @codex_worktree_name "$name"
+  if [ "$pane_cwd" = "$workdir" ]; then
+    tmux set-option -p -q -u -t "$target" @codex_workdir 2>/dev/null || true
+    tmux set-option -p -q -u -t "$target" @codex_worktree_name 2>/dev/null || true
+    tmux set-window-option -q -t "$target" automatic-rename on 2>/dev/null || true
+  else
+    tmux set-option -p -q -t "$target" @codex_workdir "$workdir"
+    tmux set-option -p -q -t "$target" @codex_worktree_name "$name"
+    tmux rename-window "$name" 2>/dev/null || true
+  fi
 else
   tmux set-option -p -q @codex_workdir "$workdir"
   tmux set-option -p -q @codex_worktree_name "$name"
+  tmux rename-window "$name" 2>/dev/null || true
 fi
-
-tmux rename-window "$name" 2>/dev/null || true

@@ -8,7 +8,6 @@ status_line = [
   "model-with-reasoning",
   "weekly-limit",
   "context-remaining",
-  "context-used",
   "git-branch",
 ]
 
