@@ -47,9 +47,13 @@ bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded ✓"
 #      (별칭 맵은 age 암호화 = 실제 repo 이름을 public dotfiles 에 노출 안 함.
 #       헬퍼 없거나(server role 등) 미일치면 원래 이름 그대로 → 안전 통과.)
 #      브랜치/워크트리 이름은 치환 대상 아님(별칭 헬퍼 미경유).
+#    · Codex `/wt` 는 pane 옵션 @codex_workdir 만 세팅 → 포맷이 이를 우선 읽어
+#      (있고 실존하면) 그 워크트리 기준으로 이름 계산, 없으면 pane_current_path 폴백.
+#      이렇게 automatic-rename 을 절대 끄지 않으므로 탭이 stale 로 얼어붙지 않음
+#      (rename-window 로 automatic-rename 을 OFF 시키던 과거 구조의 근본 원인 제거).
 set -g  allow-rename off          # 프로그램(claude)의 OSC 타이틀 변경 무시
 setw -g automatic-rename on
-setw -g automatic-rename-format '#(p="#{pane_current_path}"; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi)'
+setw -g automatic-rename-format '#(p="#{@codex_workdir}"; if [ -z "$p" ] || [ ! -d "$p" ]; then p="#{pane_current_path}"; fi; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi)'
 
 # ============================================================
 #  상태바 — 위쪽 + Kanagawa (미니멀: 배경블록 없음)

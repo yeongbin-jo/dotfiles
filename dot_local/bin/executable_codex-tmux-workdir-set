@@ -1,6 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
+# Publish the pane's logical Codex worktree as tmux pane options
+# (@codex_workdir / @codex_worktree_name). The tab name itself is governed
+# ENTIRELY by tmux.conf's automatic-rename-format, which prefers @codex_workdir
+# and falls back to pane_current_path. So this script must NEVER call
+# `rename-window` or disable `automatic-rename` — doing so freezes the tab, and
+# any out-of-band clearing of the claim would then leave it stuck forever.
+
 workdir="${1:-}"
 name="${2:-}"
 
@@ -35,16 +42,15 @@ fi
 
 if [ -n "$target" ]; then
   if [ "$pane_cwd" = "$workdir" ]; then
+    # Shell is physically in the target worktree → no divergent claim needed;
+    # automatic-rename-format falls back to the pane cwd on its own.
     tmux set-option -p -q -u -t "$target" @codex_workdir 2>/dev/null || true
     tmux set-option -p -q -u -t "$target" @codex_worktree_name 2>/dev/null || true
-    tmux set-window-option -q -t "$target" automatic-rename on 2>/dev/null || true
   else
     tmux set-option -p -q -t "$target" @codex_workdir "$workdir"
     tmux set-option -p -q -t "$target" @codex_worktree_name "$name"
-    tmux rename-window "$name" 2>/dev/null || true
   fi
 else
   tmux set-option -p -q @codex_workdir "$workdir"
   tmux set-option -p -q @codex_worktree_name "$name"
-  tmux rename-window "$name" 2>/dev/null || true
 fi

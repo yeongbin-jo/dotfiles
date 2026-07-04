@@ -124,6 +124,13 @@ nydus() {
   esac
 }
 
+# Reap a stale Codex worktree claim on this pane. The tab name itself is governed
+# entirely by tmux.conf's automatic-rename-format (which prefers @codex_workdir and
+# falls back to pane_current_path) — automatic-rename is never disabled, so a tab can
+# no longer freeze. This hook only drops the pane's @codex_workdir once the interactive
+# shell has moved off the claimed worktree (human took the pane back) or it was removed,
+# so the format cleanly falls back to the real cwd. Runs at the prompt only, so it never
+# fights a Codex run in progress.
 _clear_stale_codex_tmux_workdir() {
   [ -n "${TMUX:-}" ] || return 0
   [ -n "${TMUX_PANE:-}" ] || return 0
@@ -135,11 +142,13 @@ _clear_stale_codex_tmux_workdir() {
 
   current_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PWD")"
   codex_root="$(git -C "$codex_workdir" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$codex_workdir")"
-  [ "$current_root" != "$codex_root" ] || return 0
+  # Still inside the claimed worktree and it exists → keep the claim.
+  if [ "$current_root" = "$codex_root" ] && [ -d "$codex_workdir" ]; then
+    return 0
+  fi
 
   tmux set-option -p -q -u -t "$TMUX_PANE" @codex_workdir 2>/dev/null || true
   tmux set-option -p -q -u -t "$TMUX_PANE" @codex_worktree_name 2>/dev/null || true
-  tmux set-window-option -q -t "$TMUX_PANE" automatic-rename on 2>/dev/null || true
 }
 
 autoload -Uz add-zsh-hook
