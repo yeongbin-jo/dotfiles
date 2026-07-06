@@ -32,11 +32,14 @@ except Exception:
 
 cwd = (data.get("workspace") or {}).get("current_dir") or data.get("cwd") or os.getcwd()
 context = data.get("context_window") or {}
-context_used = clamp_percent(
-    context.get("used_percentage")
-    if context.get("used_percentage") is not None
-    else 100 - clamp_percent(context.get("remaining_percentage", 100))
-)
+# 갓 연 세션은 used_percentage / remaining_percentage 가 모두 null(키는 존재)로 들어온다.
+# dict.get(key, default) 는 "키 부재"일 때만 default 를 주고, "키 있으나 값 null"이면 None 을
+# 그대로 돌려준다 → 예전엔 clamp_percent(None)=0, 100-0=100 이 되어 빈 컨텍스트가 100%로 표시됐다.
+used_value = context.get("used_percentage")
+if used_value is None:
+    remaining_value = context.get("remaining_percentage")
+    used_value = 100 - clamp_percent(remaining_value) if remaining_value is not None else 0
+context_used = clamp_percent(used_value)
 
 seven_day = (data.get("rate_limits") or {}).get("seven_day") or {}
 weekly_used = seven_day.get("used_percentage")
