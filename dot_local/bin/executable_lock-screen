@@ -7,11 +7,13 @@
 #
 # It also ignores the "require password after N seconds" grace delay and
 # locks instantly, and it works two ways:
-#   • locally, inside your GUI session         → direct framework call
-#   • over ssh / from a headless shell         → injected into the console
-#                                                 user's GUI session via
-#                                                 `sudo launchctl asuser`
-#                                                 (needs passwordless sudo)
+#   • locally, inside your GUI session   → direct login.framework call
+#   • over ssh / from a headless shell   → injected into the console user's
+#                                          GUI session via `sudo launchctl
+#                                          asuser` (needs passwordless sudo)
+#
+# The screen lock is asynchronous, so after asking for it we poll the
+# IOConsoleLocked state for a few seconds before declaring success.
 set -euo pipefail
 
 if [ "$(uname)" != "Darwin" ]; then
@@ -27,25 +29,46 @@ console_uid="$(id -u "$console_user" 2>/dev/null || echo 0)"
 
 is_locked() { ioreg -l -w0 2>/dev/null | grep -qi '"IOConsoleLocked" = Yes'; }
 
-# 1) If this shell is the console GUI session, lock directly (no sudo needed).
-if [ "$(id -u)" = "$console_uid" ]; then
-  /usr/bin/python3 -c "$lock_snippet" 2>/dev/null || true
-  sleep 1
-fi
-
-# 2) If still unlocked (e.g. running over ssh in a different security
-#    session), inject the lock into the console user's GUI session.
-if ! is_locked && [ "$console_uid" != 0 ]; then
-  if sudo -n launchctl asuser "$console_uid" /usr/bin/python3 -c "$lock_snippet" 2>/dev/null; then
+# Poll for the lock to register (it is async); $1 = max seconds to wait.
+wait_locked() {
+  local n="$1"
+  while [ "$n" -gt 0 ]; do
+    is_locked && return 0
     sleep 1
-  fi
+    n=$((n - 1))
+  done
+  is_locked
+}
+
+lock_direct() { /usr/bin/python3 -c "$lock_snippet" 2>/dev/null || true; }
+lock_asuser() { sudo -n launchctl asuser "$console_uid" /usr/bin/python3 -c "$lock_snippet" 2>/dev/null; }
+
+finish_ok() { echo "locked: screen now requires a password (console user: $console_user)"; exit 0; }
+
+attempted=0
+
+# 1) Local GUI console session → lock directly, no sudo needed.
+if [ -z "${SSH_CONNECTION:-}" ] && [ "$(id -u)" = "$console_uid" ]; then
+  lock_direct
+  attempted=1
+  wait_locked 3 && finish_ok
 fi
 
-if is_locked; then
-  echo "locked: screen now requires a password (console user: $console_user)"
-else
-  echo "lock request sent but the screen did not lock" >&2
-  echo "  no GUI session is logged in, or passwordless sudo is unavailable" >&2
-  echo "  for 'launchctl asuser $console_uid'." >&2
-  exit 1
+# 2) Over ssh (or if the direct call didn't take) → inject into the
+#    console user's GUI session.
+if [ "$console_uid" != 0 ]; then
+  lock_asuser || true
+  attempted=1
+  wait_locked 5 && finish_ok
 fi
+
+# 3) Console owned by root / nobody logged in → last-resort direct call.
+if [ "$attempted" -eq 0 ]; then
+  lock_direct
+  wait_locked 3 && finish_ok
+fi
+
+echo "lock request sent but the screen did not lock" >&2
+echo "  no GUI session is logged in, or passwordless sudo is unavailable" >&2
+echo "  for 'launchctl asuser $console_uid'." >&2
+exit 1
