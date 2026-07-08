@@ -27,7 +27,15 @@ lock_snippet='import ctypes; ctypes.CDLL("'"$login_lib"'").SACLockScreenImmediat
 console_user="$(stat -f '%Su' /dev/console 2>/dev/null || echo root)"
 console_uid="$(id -u "$console_user" 2>/dev/null || echo 0)"
 
-is_locked() { ioreg -l -w0 2>/dev/null | grep -qi '"IOConsoleLocked" = Yes'; }
+# Capture ioreg output into a variable and glob-match it, rather than
+# piping to `grep -q`: under `set -o pipefail`, grep -q closes the pipe on
+# first match and ioreg dies with SIGPIPE, which pipefail would surface as
+# a failure even though the pattern matched.
+is_locked() {
+  local out
+  out="$(ioreg -l -w0 2>/dev/null)" || true
+  [[ "$out" == *'"IOConsoleLocked" = Yes'* ]]
+}
 
 # Poll for the lock to register (it is async); $1 = max seconds to wait.
 wait_locked() {
