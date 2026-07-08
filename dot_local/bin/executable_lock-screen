@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# lock-screen — immediately lock the Mac screen behind a password.
+#
+# Unlike sleeping the display, this does NOT stop any running work: the
+# GUI session just switches to the login window while every process keeps
+# running (tauri dev, game capture, this ssh session, tailscale, …).
+#
+# It also ignores the "require password after N seconds" grace delay and
+# locks instantly, and it works two ways:
+#   • locally, inside your GUI session         → direct framework call
+#   • over ssh / from a headless shell         → injected into the console
+#                                                 user's GUI session via
+#                                                 `sudo launchctl asuser`
+#                                                 (needs passwordless sudo)
+set -euo pipefail
+
+if [ "$(uname)" != "Darwin" ]; then
+  echo "lock-screen: macOS only (this host is $(uname))" >&2
+  exit 1
+fi
+
+login_lib='/System/Library/PrivateFrameworks/login.framework/login'
+lock_snippet='import ctypes; ctypes.CDLL("'"$login_lib"'").SACLockScreenImmediate()'
+
+console_user="$(stat -f '%Su' /dev/console 2>/dev/null || echo root)"
+console_uid="$(id -u "$console_user" 2>/dev/null || echo 0)"
+
+is_locked() { ioreg -l -w0 2>/dev/null | grep -qi '"IOConsoleLocked" = Yes'; }
+
+# 1) If this shell is the console GUI session, lock directly (no sudo needed).
+if [ "$(id -u)" = "$console_uid" ]; then
+  /usr/bin/python3 -c "$lock_snippet" 2>/dev/null || true
+  sleep 1
+fi
+
+# 2) If still unlocked (e.g. running over ssh in a different security
+#    session), inject the lock into the console user's GUI session.
+if ! is_locked && [ "$console_uid" != 0 ]; then
+  if sudo -n launchctl asuser "$console_uid" /usr/bin/python3 -c "$lock_snippet" 2>/dev/null; then
+    sleep 1
+  fi
+fi
+
+if is_locked; then
+  echo "locked: screen now requires a password (console user: $console_user)"
+else
+  echo "lock request sent but the screen did not lock" >&2
+  echo "  no GUI session is logged in, or passwordless sudo is unavailable" >&2
+  echo "  for 'launchctl asuser $console_uid'." >&2
+  exit 1
+fi

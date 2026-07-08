@@ -3,6 +3,9 @@ service_tier = "fast"
 [projects."/Users/yb/project/crosscheck"]
 trust_level = "trusted"
 
+[projects."/Users/chida/project/mabi-mobile-life"]
+trust_level = "trusted"
+
 [tui]
 status_line = [
   "model-with-reasoning",

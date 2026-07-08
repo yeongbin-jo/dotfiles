@@ -104,6 +104,7 @@ alias vi="vim"
 alias dps='docker ps --format "table {{ `{{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}` }}"'
 alias dip='docker inspect -f "{{ `{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}` }}"'
 alias scrcpy='scrcpy --stay-awake'
+alias lock='lock-screen'                                              # 즉시 비번 잠금(작업은 계속 실행)
 alias claude-yolo='claude --dangerously-skip-permissions'
 alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
 alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
