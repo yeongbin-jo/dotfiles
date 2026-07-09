@@ -1,4 +1,5 @@
 service_tier = "fast"
+personality = "pragmatic"
 
 [projects."/Users/yb/project/crosscheck"]
 trust_level = "trusted"
