@@ -3,11 +3,16 @@
 # os: {{ .chezmoi.os }}
 # scroll-direction: natural-off
 # lock-password: immediate
+# mouse-scaling: 5
+# key-repeat: initial 10, interval 1
 # input-toggle: CapsLock -> F19 (Karabiner) -> "Select the previous input source" = 한/영 전환
 set -e
 
 {{- if eq .chezmoi.os "darwin" }}
 defaults write NSGlobalDomain com.apple.swipescrolldirection -bool false
+defaults write NSGlobalDomain com.apple.mouse.scaling -float 5
+defaults write NSGlobalDomain InitialKeyRepeat -int 10
+defaults write NSGlobalDomain KeyRepeat -int 1
 defaults write com.apple.screensaver askForPassword -int 1
 defaults write com.apple.screensaver askForPasswordDelay -int 0
 # 한/영 전환: Karabiner maps CapsLock->F19; here we bind macOS "Select the previous input
@@ -15,7 +20,7 @@ defaults write com.apple.screensaver askForPasswordDelay -int 0
 defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 "<dict><key>enabled</key><true/><key>value</key><dict><key>type</key><string>standard</string><key>parameters</key><array><integer>65535</integer><integer>80</integer><integer>0</integer></array></dict></dict>"
 killall cfprefsd >/dev/null 2>&1 || true
 /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u >/dev/null 2>&1 || true
-echo "[macos-input] natural scroll off; lock immediate; input-source toggle -> F19 (CapsLock)"
+echo "[macos-input] mouse 5; key repeat 10/1; natural scroll off; lock immediate; input-source toggle -> F19 (CapsLock)"
 {{- else }}
 echo "[macos-input] skipped on non-darwin"
 {{- end }}
