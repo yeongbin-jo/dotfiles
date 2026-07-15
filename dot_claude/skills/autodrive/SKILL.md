@@ -61,8 +61,8 @@ For mixed work, apply the highest relevant rigor to each change area rather than
 |---|---|---|---|
 | Prepare worktree/branch | `cc-prepare-ticket` | `cc-prepare-ticket` | `cc-prepare-ticket` |
 | Ground in code and real evidence | focused | focused | broad + risk inventory |
-| Phase 0 | skip when truly mechanical | light discussion lock + explicit ACs/spec as needed | full discussion → spec → plan → tasks + multi-reviewer audit |
-| Build | direct, tested edit | `cc-build-phase` mechanics, right-sized | full `cc-build-phase` |
+| Phase 0 | skip when truly mechanical | light contract recorded before implementation: written goal + explicit ACs + verification plan; full spec package only when risk or repository policy requires it | full discussion → spec → plan → tasks + multi-reviewer audit |
+| Build | direct, tested edit | direct tested implementation after the light contract when repository policy permits; use `cc-build-phase` mechanics when useful | full `cc-build-phase` |
 | Post-build adversarial review | quick independent check | one fix → re-review loop | full bounded parallel review |
 | **Preflight before first push/PR** | **mandatory, lightweight** | **mandatory** | **mandatory + full seam review** |
 | Runtime verification | only if behavior changed | real path when feasible | real path/prod-shaped evidence when safely feasible |
