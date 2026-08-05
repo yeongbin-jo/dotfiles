@@ -51,6 +51,7 @@ bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded ✓"
 #      (있고 실존하면) 그 워크트리 기준으로 이름 계산, 없으면 pane_current_path 폴백.
 #      이렇게 automatic-rename 을 절대 끄지 않으므로 탭이 stale 로 얼어붙지 않음
 #      (rename-window 로 automatic-rename 을 OFF 시키던 과거 구조의 근본 원인 제거).
+#    · 단, automatic-rename 만으로는 부족하다 → 아래 status-right 끝의 재평가 넛지 참고.
 set -g  allow-rename off          # 프로그램(claude)의 OSC 타이틀 변경 무시
 setw -g automatic-rename on
 setw -g automatic-rename-format '#(p="#{@codex_workdir}"; if [ -z "$p" ] || [ ! -d "$p" ]; then p="#{pane_current_path}"; fi; b=$(git -C "$p" branch --show-current 2>/dev/null); if [ -z "$b" ] || [ "$b" = main ] || [ "$b" = master ]; then n=$(basename "$(git -C "$p" rev-parse --show-toplevel 2>/dev/null || echo "$p")"); a="$HOME/.tmux/window-name-alias.sh"; [ -x "$a" ] && n=$("$a" "$n"); echo "$n"; else echo "$b"; fi)'
@@ -99,6 +100,22 @@ set -ga status-right '   #[fg=#727169]DKR#(N=`docker ps -q 2>/dev/null | wc -l |
 {{- end }}
 set -ga status-right '   #[fg=#727169]#h'
 set -ga status-right '   #[fg=#7e9cd8,bold]%H:%M #[fg=#54546d]%m-%d '
+
+# ── 창 이름 재평가 넛지 (출력 없는 cwd 변경에도 탭이 따라오게) ──
+#    tmux 는 automatic-rename-format 을 "그 패널이 출력을 냈을 때"만 다시 계산한다
+#    (window.c check_window_name 의 PANE_CHANGED 게이트). 그런데 claude 의
+#    EnterWorktree(`/wt`) 는 에이전트 프로세스의 cwd 만 바꾸고 터미널 출력은 내지
+#    않는다 → pane_current_path 는 즉시 새 워크트리를 가리키는데 탭 이름만 이전
+#    워크트리/브랜치에 얼어붙는다(= 아예 다른 티켓 이름이 계속 보이는 증상).
+#    게다가 #() 는 비동기라 새 결과는 한 박자 뒤에 캐시에 들어오므로, 출력이 있어도
+#    항상 "출력 한 번 늦은" 이름이 걸린다.
+#    → automatic-rename 을 다시 set 하면 tmux 가 (그 옵션이 on 인) 모든 창에
+#      PANE_CHANGED 를 세워 재평가를 강제한다(options_push_changes).
+#      상태줄이 status-interval(1s)마다 이 #() 를 돌려주므로 별도 데몬 없이
+#      유휴 패널도 ~1-2s 안에 실제 워크트리/브랜치를 따라온다.
+#    · 수동 rename 한 창(automatic-rename off)은 대상에서 제외되므로 안 건드린다.
+#    · 출력이 없는 명령이라 상태줄에는 아무것도 그리지 않는다(#[] 도 % 도 ) 도 없음).
+set -ga status-right '#(tmux set-window-option -g automatic-rename on)'
 
 # ── agent 전용 보조 상태줄 ──
 # status는 항상 2줄로 고정하고, 두 번째 줄의 내용만 활성 pane이 Claude/Codex일 때 표시한다.
