@@ -10,6 +10,11 @@ Catch deterministic failures and probeable contract gaps before CI. Produce evid
 ## Entry
 
 1. Resolve the repository, primary spec, base SHA, candidate SHA or tree OID, and changed files.
+   The candidate is the tree the CI gate actually evaluates. Where that gate builds a merge of head
+   into base (the GitHub `pull_request` default), resolve and check THAT tree: a base that advanced
+   since the branch point can break the candidate through code neither side changed alone. If the
+   merge tree cannot be checked locally, record the base delta as `UNVERIFIED` with CI as its owner
+   rather than reporting PASS on head alone.
 2. Read the current `AGENTS.md`, the primary spec, and the actual workflows under `.github/workflows/`.
 3. Stop if the candidate is not identifiable. Never review a moving or ambiguous diff.
 
@@ -35,7 +40,20 @@ Then run only the diff-triggered checks whose source of truth exists in the repo
 - version/manifest agreement and generated-wrapper freshness;
 - safe live-contract probes when the changed contract can be exercised read-only.
 
+- **the SHIPPED tree, whenever it differs from the tree you just checked.** Every check above compiles the full
+  checkout; what deploys may be a *transformed* tree — pruned by `.dockerignore`, narrowed by a
+  `files[]`/`include`/`exclude` list, or dependency-stripped by a `deploy`/prune step. A green check on the
+  full tree is NOT evidence about the shipped one. Trigger: the diff adds, moves, or renames a file that
+  another file imports; changes an import; or edits any manifest that enumerates paths individually. Then
+  build the shipped artifact far enough to compile it (e.g. `docker build --target <build-stage>`) and record
+  the result. Cost is minutes; the failure mode is a post-merge red `main` that no PR check can see, because
+  the pruned context is first exercised on the push to the default branch.
+
 If a required check cannot run locally, record `UNVERIFIED` with the exact reason. Never infer PASS.
+
+Before naming a later gate as the owner of an `UNVERIFIED` item, verify that gate actually exists and will run — read the workflow/lane rather than assuming a conventional one. An owner that does not exist is a silent gap, not a deferral.
+
+When a local failure is attributed to environment or flake rather than the candidate, prove it against the base tree (a clean checkout of the merge base, sampled enough times to compare rates) instead of reasoning from which files the diff touched.
 
 ## 2. Run an independent seam review
 
@@ -50,6 +68,8 @@ The reviewer must return evidence, not only a verdict:
 - explicit `coreGoalDrift`, `implementationPivot`, and `productDecisionRequired` verdicts when a spec or agreed goal governs the change. Keep them independent: preserving the goal does not clear a product-decision or implementation-pivot finding.
 
 Read [references/seam-classes.md](references/seam-classes.md) when the diff touches an external contract, queue/worker, durable transition, auth/tenancy, CI workflow, generated validator, or multi-layer projection. Do not hand the reviewer a narrow pre-baked list as its entire framing.
+
+Triage rule: a reported contradiction between the spec/AC and the implementation can never be filed as a suggestion or wording nit. Either the code is wrong or the AC is wrong; resolve which, change that one, record the rationale, and pin the resulting property with a test. Deferring the contradiction leaves the artifact asserting something the code does not do.
 
 ## 3. Preserve seam integrity
 

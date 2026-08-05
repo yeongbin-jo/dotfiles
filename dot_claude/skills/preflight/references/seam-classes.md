@@ -9,6 +9,7 @@ Trigger when the diff calls or mirrors an external route, SuiteQL/schema, MCP to
 - Resolve existence against the real registry, schema, task definition, or deployed read-only surface.
 - Execute derived wire shapes, coercions, defaults, and serialization; do not infer them from declarations.
 - Exercise the same acquisition path production uses. A fixture or hand-fed payload may test downstream behavior but does not test acquisition.
+- A bounded timeout must stay armed until the RESPONSE BODY is consumed, not only until the call resolves. `fetch()` resolves on headers, so a peer that accepts the request and then stalls the body defeats a timer cleared at that point — verify the abort budget spans the body read and that an abort there is classified as a failure.
 - For SuiteQL or API routes, prefer a safe sandbox/read-only parse or local-stack smoke over a mock.
 
 ## Conditional skip or absent result

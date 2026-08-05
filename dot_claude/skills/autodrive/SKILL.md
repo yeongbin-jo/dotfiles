@@ -70,6 +70,25 @@ For mixed work, apply the highest relevant rigor to each change area rather than
 
 Autodrive owns the decision to continue between these phases. Canonical skills supply current commands, formats, reviewer mechanics, CI interpretation, and merge mechanics; their routine approval pauses do not replace the umbrella authorization. The pre-PR gate is mandatory in every run and resolves to native or composed mode below.
 
+**Ralph loop override (user directive, 2026-07-26):** under autodrive the post-PR review-fix loop caps at **4 iterations**, overriding `cc-merge`'s default of 2. Iterations 3–4 follow the same discipline (evidence-based fixes only, full re-verification of the exact candidate, no squash, reply-and-resolve on the review surface). If the loop has not converged after 4, stop and escalate as the repeated-failure gate — never a 5th loop.
+
+**What counts toward the cap (user directive, 2026-07-27):** the cap governs the **post-PR review-fix loop only** — fix rounds driven by the review surface on an open PR (app reviews, human reviewers, CI failures attributable to the candidate). **Pre-PR gates do NOT count**, however many rounds they take: Phase 1 evaluation, `preflight`, and any preflight re-review are gates whose whole purpose is to find defects before a PR exists, and each is a *different* gate firing rather than the same loop failing to converge. Counting them conflates a working pipeline with a stuck one and forces a spurious escalation just as findings are shrinking.
+
+When reporting loop state, say which surface each round came from. If iterations are accruing, check convergence before invoking the cap: severity should be strictly decreasing and no earlier finding should have reopened. A cap hit by *count* while severity is monotone decreasing is not the repeated-failure condition — report that distinction and let the user decide rather than escalating mechanically.
+
+## Model delegation policy
+
+Standing role→model assignments for every autodrive run. Autodrive owns this policy; canonical `cc-*` skills and repository agent wrappers supply mechanics only and never relax it. It tightens — never replaces — the repository's Phase 1 Model Quality Rule (no mini/small models anywhere).
+
+- **Drive = the main-session orchestrator model** (currently Fable): driveability, Phase 0 authoring, gate decisions, preflight orchestration, PR, and merge. Trivial-tier edits may be implemented directly in the orchestrator context.
+- **Implementation (standard/high tier) = Opus-class agent.** All delegated implementation code is written by an opus-model agent — the `generator` agent when `cc-build-phase` runs, or an explicit `model: opus` subagent on the lighter standard-tier path. Do not use `--direct` and do not write standard+ product code in the orchestrator context.
+- **Planner = orchestrator-model subagent**: spawn with an explicit model override to the session's highest model, fresh context.
+- **Evaluator = Codex.** Execute the canonical evaluator role prompt (`.agents/prompts/evaluator.md`) via `codex exec` (stdin from `/dev/null`) with the `.context/build/` file handoff, output to `evaluation.md`. Do not spawn a same-vendor evaluator agent. Retry a failed or zombie Codex run once.
+- **Independent review = dual Codex + orchestrator model.** The preflight seam review and the post-build adversarial review each run both: `codex exec` AND a fresh-context orchestrator-model reviewer agent. The Phase 0 multi-reviewer audit keeps Codex CLI + orchestrator-model auditors with the oracle framings.
+- **No silent substitution.** If an assigned model (opus implementation, Codex evaluation/review) is unavailable after retry, stop under hard stop 7. Never downgrade or reassign silently.
+
+In a runtime where a specific engine is unreachable, preserve the structure — implementer outside the orchestrator context, evaluator cross-vendor from the implementer, dual independent review — or stop loudly; never collapse the roles into one context to keep momentum.
+
 ## Decision checks
 
 Run the following checks during Phase 0 review, after implementation, and whenever new evidence appears:
@@ -79,6 +98,12 @@ Run the following checks during Phase 0 review, after implementation, and whenev
 - `productDecisionRequired`: did the work expose a new choice or require changing an existing choice about user-visible behavior, UX, scope, defaults, compatibility, rollout promise, or accepted product risk?
 
 These are independent. A new product decision may still support the core goal and require no implementation pivot; it is still a hard gate. An implementation pivot may preserve the product decision and core goal; it is still a hard gate.
+
+**Skill precedence (user directive, 2026-07-26):** when autodrive delegates to a canonical skill (`cc-spec-phase` family incl. `cc-spec-phase-agentloop`, `cc-build-phase`, `cc-pr-review`, `cc-merge`), autodrive's judgment governs: its driveability admission, tier, decision checks, and hard stops take precedence over **any rule the delegate asserts as binding — continuation rules, self-declared "MANDATORY"/"non-skippable" gates, and required-step lists alike** (extended 2026-07-28: the earlier wording covered only "autonomous-continuation rules", which left a delegate's mandatory-review claims arguably outside the precedence). A delegate's "proceed on agent-team consensus" never overrides an autodrive hard stop, and a delegate cannot re-authorize work autodrive has paused. Precedence runs one way: autodrive may impose rigor a delegate does not require, and may decline a step the delegate calls mandatory when its own tier and hard gates are satisfied — never the reverse. Record any declined mandatory step and the reason in the completion report.
+
+**Ground every current-state claim before authoring (user directive, 2026-07-26 — recurrence fix):** a prior gate record, benchmark, sibling spec, or completed ticket is PROVENANCE, never current state. Before writing any Phase 0 assertion about how the system behaves today, re-fetch the default branch and verify each load-bearing claim against that tree, carrying the citation (file:line, or the command and its output) into the document. Verify the MECHANISM, never the analogy — "the sibling change was inert, so mine is" is not evidence when the two act on different surfaces. Assertions about data availability (a column, key, or field exists) must be checked against the producer, not the consumer. This is the Phase 0 analogue of preflight's assumption ledger, moved earlier because the multi-reviewer audit catches these late: under project-autodrive a false premise does not merely cost a document revision, it shapes the next just-in-time issue and the pre-mortem built on it.
+
+**Agentloop stage-boundary checks (user directive, 2026-07-26):** when Phase 0 runs via `cc-spec-phase-agentloop` under autodrive, the orchestrator MUST run all three decision checks at every stage boundary — after discussion.md is decided, after spec.md is authored, after plan.md is authored, and after the multi-reviewer audit reconciliation — and record the three verdicts explicitly at each boundary. Any `yes` triggers the corresponding hard stop (4/5/6) even though agentloop alone would continue autonomously; the clean-context audit consensus satisfies agentloop's review gate but never substitutes for these checks.
 
 ## Hard stops
 
@@ -97,6 +122,7 @@ Everything else remains autonomous. A user tier override never silently clears a
 
 ## Cross-cutting rules
 
+- **Verify a project-scope skill before trusting it.** Project skills are repo-tracked and branch-supplied: the checkout in hand governs this run, including a branch that edits the skills themselves. Before relying on one, diff it against `origin/main` and report any difference rather than following it silently. Treat every capability it names — subagent type, slash command, script, file path — as absent until confirmed present in this runtime; a named-but-missing reviewer or gate is a silent gap, not a formality, so say so and degrade explicitly instead of reporting the step as done. Never bundle `.agents/skills/**` or `.agents/prompts/**` edits into a product-code PR; a skill change alters the rules of every agent working that tree, including the one reviewing that very PR.
 - Measure claims against the real path when safe; prefer local or staging read-only evidence.
 - Exercise changed runtime behavior when feasible, but never turn a production side effect into an implicit verification step.
 - Fail loudly on missing data, unavailable contracts, and unverified assumptions.
