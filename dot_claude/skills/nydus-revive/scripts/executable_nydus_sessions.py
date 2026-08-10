@@ -354,6 +354,15 @@ def load_ledger() -> dict | None:
         return None
 
 
+def was_claude_window(entry: dict) -> bool:
+    """이 창에서 claude 를 본 적이 있는가.
+
+    nydus 에는 claude 가 아닌 상시 프로세스 창도 있다(m4-mini 의 `python -m nao.bot` 등).
+    그런 창은 claude 가 없다고 해서 '죽은' 게 아니므로 복구 대상이 아니다.
+    """
+    return bool(entry.get("argv"))
+
+
 def cmd_status(args) -> int:
     led = load_ledger()
     if not led:
@@ -362,17 +371,24 @@ def cmd_status(args) -> int:
     age = int(time.time()) - led.get("saved_at", 0)
     print(f"원장: {LEDGER}  ({age // 60}분 전 기록, 세션={led.get('session')})")
     live = {w["index"]: claude_argv_on_tty(w["tty"]) is not None for w in tmux_windows(led.get("session", args.session))}
-    dead = 0
+    dead = unknown = 0
     for e in led["windows"]:
         now = live.get(e["index"])
         if now is None:
             state = "창 없음"
         elif now:
             state = "정상"
-        else:
+        elif not was_claude_window(e):
+            state = "claude 창 아님 — 대상 아님"
+        elif e.get("session_id"):
             state, dead = "죽음 → 복구 대상", dead + 1
+        else:
+            state, unknown = "죽음 — ⚠︎ 세션 ID 미상, 수동 확인 필요", unknown + 1
         print(f"  {e['index']} {e['name'][:38]:<38} {(e['session_id'] or '—')[:8]}  {state}")
-    print(f"복구 대상 {dead}개")
+    tail = f"복구 대상 {dead}개"
+    if unknown:
+        tail += f" / ID 미상 {unknown}개"
+    print(tail)
     return 0
 
 
@@ -399,6 +415,11 @@ def cmd_restore(args) -> int:
             continue
         if claude_argv_on_tty(w["tty"]) is not None:
             print(f"  [건너뜀] {idx} {e['name']} — 이미 살아있음 (절대 건드리지 않음)")
+            skipped += 1
+            continue
+
+        if not was_claude_window(e):
+            print(f"  [건너뜀] {idx} {e['name']} — claude 창이 아닙니다 (복구 대상 아님)")
             skipped += 1
             continue
 
