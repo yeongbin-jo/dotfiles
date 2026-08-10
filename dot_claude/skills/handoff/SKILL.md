@@ -42,17 +42,34 @@ Skip it when the work is done, or the remainder is a single self-evident step.
    that must be figured out before the risky step (e.g. "confirm repo X's deploy trigger before
    merging"). This is what turns a bad surprise into a planned first move.
 
-## Where to write it (durable + auto-discoverable > ephemeral)
-Pick the location the next session will actually find, in priority order:
-- **This project's persistent memory**, if one exists (e.g. a Claude auto-memory dir): write a
-  `type: project` memory file `rndNNNN-...-handoff.md` (or task-slug) AND add its one-line
-  pointer to the memory index (`MEMORY.md`) so it auto-loads next session. Link related memories
-  with `[[name]]`.
-- **Else a repo-relative `HANDOFF.md`** (or `docs/handoff/<task>.md`) committed with the work, so
-  it travels with the branch/PR.
-- **Else** the agent's notes/scratch that persists across sessions.
-Prefer a real file over only chat — chat may not survive the session. Then **always present the
-handoff inline** too (the user asked to see it).
+## Where to write it (travels with the work > auto-loaded)
+Prefer a real file over only chat — chat may not survive the session. Priority order:
+
+1. **A repo-relative file committed with the work** — `HANDOFF.md`, or `docs/handoff/<task>.md`
+   in repos that keep planning docs under `docs/`. This is the default. It travels with the
+   branch/PR, it is visible in review, and it dies with the branch when the work merges.
+   Name it by **that repo's own ticket convention** (issue number, branch slug) — never import a
+   ticket-id shape from another project.
+2. **Else** the agent's notes/scratch that persists across sessions.
+
+**Persistent memory is for a POINTER, not the handoff body.** If the project has an auto-memory
+dir and the work will really span sessions, add a one-line index entry pointing at the file
+(`- [<task> 핸드오프](path) — resume from <one line>`). Do not paste the handoff into memory:
+memory is one-fact-per-file and is loaded into *every* future session, so a multi-fact,
+short-lived doc there is context you pay for on every unrelated task — and it reads as current
+long after it stops being true.
+
+Then **always present the handoff inline** too (the user asked to see it).
+
+## Close it out when the work lands
+A stale handoff is worse than none — the next session reads it as the current state and acts on
+a resume point that no longer exists. So when the work completes (or is abandoned):
+- delete the handoff file, and
+- remove its pointer line from the memory index if you added one.
+
+If a handoff you find is already satisfied, say so and delete it rather than leaving it to rot.
+Anything in it worth keeping permanently is a *separate* durable note (a decision, a gotcha) —
+promote that on its own terms, don't keep the handoff alive as its container.
 
 ## Style
 - Scannable: short sections, tables for step lists / status, bold the gates and the ONE next
