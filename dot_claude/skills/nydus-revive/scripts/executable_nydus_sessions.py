@@ -74,22 +74,27 @@ def tmux_windows(session: str) -> list[dict]:
     return windows
 
 
-def claude_argv_on_tty(tty: str) -> list[str] | None:
-    """그 tty 에 붙어있는 claude 프로세스의 argv.
+def claude_proc_on_tty(tty: str) -> tuple[int, list[str]] | None:
+    """그 tty 에 붙어있는 claude 프로세스의 (pid, argv).
 
     pane_pid 의 자식만 보면 놓친다(창에 따라 claude 가 재-부모화된다). tty 기준이 확실하다.
     MCP 헬퍼(node ...)가 같은 tty 에 붙으므로 실행파일명이 claude 인 것만 고른다.
+    pid 는 스냅샷 사이에 "같은 프로세스인가"를 판정하는 데 쓴다(아래 merge_ledger).
     """
-    out = sh(["ps", "-t", tty.replace("/dev/", ""), "-o", "args="])
+    out = sh(["ps", "-t", tty.replace("/dev/", ""), "-o", "pid=,args="])
     for line in out.splitlines():
-        line = line.strip()
-        if not line:
+        parts = line.strip().split()
+        if len(parts) < 2 or not parts[0].isdigit():
             continue
-        argv = line.split()
-        exe = os.path.basename(argv[0])
-        if exe == "claude" or exe.startswith("claude"):
-            return argv
+        pid, argv = int(parts[0]), parts[1:]
+        if os.path.basename(argv[0]).startswith("claude"):
+            return pid, argv
     return None
+
+
+def claude_argv_on_tty(tty: str) -> list[str] | None:
+    proc = claude_proc_on_tty(tty)
+    return proc[1] if proc else None
 
 
 def capture_pane(session: str, index: int) -> str:
@@ -270,12 +275,14 @@ def cmd_snapshot(args) -> int:
 
     entries = []
     for w in windows:
-        argv = claude_argv_on_tty(w["tty"])
+        proc = claude_proc_on_tty(w["tty"])
+        pid, argv = proc if proc else (None, None)
         entry = {
             "index": w["index"],
             "name": w["name"],
             "cwd": w["cwd"],
             "alive": argv is not None,
+            "pid": pid,
             "argv": argv,
             "session_id": None,
             "model": None,
@@ -330,18 +337,40 @@ def cmd_snapshot(args) -> int:
 
 
 def merge_ledger(prev: dict | None, entries: list[dict]) -> list[dict]:
-    """죽은 창의 정보는 이전 원장에서 물려받는다 — 죽고 나면 알아낼 방법이 없다."""
+    """원장은 절대 나빠지지 않아야 한다 — 알아낸 것을 되돌리지 않는다.
+
+    두 가지를 물려받는다:
+      · 죽은 창의 정보 전부 — 죽고 나면 알아낼 방법이 없다.
+      · 살아있지만 이번에 ID 를 못 알아낸 창의 ID — **단, 같은 프로세스일 때만**.
+        추론은 그때 화면에 무엇이 떠 있었는지에 좌우돼서, 한 번 8/14점으로 맞춘 창이
+        다음 스냅샷엔 0점이 나올 수 있다. 그때마다 ID 를 버리면 원장이 시간이 갈수록
+        나빠진다. pid 가 그대로면 문자 그대로 같은 claude 프로세스 = 같은 세션이므로
+        물려받아도 안전하고, pid 가 바뀌었으면(사용자가 껐다 켬) 물려받지 않는다.
+    """
     old = {e["index"]: e for e in (prev or {}).get("windows", [])}
     out = []
     for e in entries:
-        if not e["alive"] and e["index"] in old:
-            keep = dict(old[e["index"]])
+        prev_e = old.get(e["index"])
+        if not e["alive"] and prev_e:
+            keep = dict(prev_e)
             keep["alive"] = False
             keep["name"] = e["name"] or keep.get("name")
             keep["cwd"] = e["cwd"] or keep.get("cwd")
             out.append(keep)
-        else:
-            out.append(e)
+            continue
+        if (
+            e["alive"]
+            and not e["session_id"]
+            and prev_e
+            and prev_e.get("session_id")
+            and prev_e.get("pid") is not None
+            and prev_e.get("pid") == e.get("pid")
+        ):
+            e = dict(e)
+            e["session_id"] = prev_e["session_id"]
+            e["model"] = e.get("model") or prev_e.get("model")
+            e["source"] = f"이전 스냅샷 유지 (같은 pid {e['pid']})"
+        out.append(e)
     return out
 
 
