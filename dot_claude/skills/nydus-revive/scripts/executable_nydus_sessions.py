@@ -411,6 +411,10 @@ def cmd_status(args) -> int:
             state = "claude 창 아님 — 대상 아님"
         elif e.get("session_id"):
             state, dead = "죽음 → 복구 대상", dead + 1
+            cur = next((w["cwd"] for w in tmux_windows(led.get("session", args.session))
+                        if w["index"] == e["index"]), None)
+            if e.get("cwd") and cur and cur != e["cwd"]:
+                state += f" (⚠︎ cwd 바뀜: 현재 {cur})"
         else:
             state, unknown = "죽음 — ⚠︎ 세션 ID 미상, 수동 확인 필요", unknown + 1
         print(f"  {e['index']} {e['name'][:38]:<38} {(e['session_id'] or '—')[:8]}  {state}")
@@ -457,6 +461,23 @@ def cmd_restore(args) -> int:
             print(f"  [실패]   {idx} {e['name']} — 세션 ID 를 모릅니다 (원장에 없음). 수동 확인 필요")
             failed += 1
             continue
+
+        # 🚨 창 번호만 믿고 띄우면 안 된다. tmux 서버가 재시작되거나 누가 창에서 cd 하면
+        #    같은 번호의 창이 다른 디렉터리를 가리킨다 — 그대로 resume 하면 그 대화가
+        #    엉뚱한 폴더에서 열린다(실측: 창 4가 워크트리 대신 ~/project 를 가리켜
+        #    Claude 가 폴더 신뢰 프롬프트를 띄웠다).
+        recorded, current = e.get("cwd"), w["cwd"]
+        if recorded and recorded != current:
+            if not os.path.isdir(recorded):
+                print(
+                    f"  [실패]   {idx} {e['name']} — 기록된 디렉터리가 없어졌습니다\n"
+                    f"            기록: {recorded}\n"
+                    f"            현재: {current}  ← 어디서 열지 사람이 정해야 합니다"
+                )
+                failed += 1
+                continue
+            print(f"            (cwd 불일치 → 기록된 {recorded} 로 이동 후 실행)")
+            cmd = f"cd {quote(recorded)} && {cmd}"
 
         print(f"  [{'예정' if args.dry_run else '복구'}]   {idx} {e['name']}\n            {cmd}")
         if not args.dry_run:
