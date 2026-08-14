@@ -17,6 +17,11 @@ brew "zsh-syntax-highlighting"
 # GUI utilities
 cask "karabiner-elements"
 cask "obsidian"
+cask "ghostty"                 # terminal emulator (config: dot_config/ghostty/config)
+
+# Fonts (Ghostty: DejaVu Sans Mono for Powerline primary + D2Coding Korean/glyph fallback)
+cask "font-dejavu-sans-mono-for-powerline"
+cask "font-d2coding"
 
 # Not brew-managed (install separately):
 #   oh-my-zsh   sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
