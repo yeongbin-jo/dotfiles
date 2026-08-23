@@ -1,0 +1,35 @@
+#!/bin/zsh
+# Claude Code 플러그인을 모든 워크스테이션에 동일하게 설치한다.
+# chezmoi run_onchange: 이 파일(렌더링 결과)이 바뀔 때마다 각 머신에서 1회 실행.
+# 설치는 공식 CLI 로만 한다 — ~/.claude/settings.json 은 머신별 permissions 가 섞여 있어 파일째 동기화하지 않는다.
+# 두 명령 모두 멱등(이미 있으면 exit 0).
+{{- if ne .role "server" }}
+set -u
+
+claude_bin=""
+for c in "$(command -v claude 2>/dev/null)" "$HOME/.local/bin/claude" "$HOME/.claude/local/claude"; do
+  if [ -n "$c" ] && [ -x "$c" ]; then claude_bin="$c"; break; fi
+done
+if [ -z "$claude_bin" ]; then
+  echo "[claude-plugins] claude CLI 없음 — 건너뜀 (설치 후 'chezmoi apply' 재실행)" >&2
+  exit 0
+fi
+
+# ── 마켓플레이스 ──────────────────────────────────────────────
+MARKETPLACES=(
+  anthropics/claude-plugins-community   # → claude-community
+)
+# ── 플러그인 (user scope) ─────────────────────────────────────
+PLUGINS=(
+  eli5@claude-community
+)
+
+rc=0
+for m in "${MARKETPLACES[@]}"; do
+  "$claude_bin" plugin marketplace add "$m" || { echo "[claude-plugins] marketplace add 실패: $m" >&2; rc=1; }
+done
+for p in "${PLUGINS[@]}"; do
+  "$claude_bin" plugin install "$p" || { echo "[claude-plugins] install 실패: $p" >&2; rc=1; }
+done
+exit $rc
+{{- end }}
