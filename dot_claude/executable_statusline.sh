@@ -37,6 +37,17 @@ def ctx_seg(used, width=14):   # 컨텍스트 사용량 바 — 우측 잔여량
 left = [c("38;5;75", model), c("38;5;252", base)]
 if branch:
     left.append(c("38;5;114", "⎇ " + branch))
+# 자율 루프 표시 — ~/.claude/loop-state/<session_id>.json 이 가리키는 컨트롤 노트에서 읽는다.
+# 세션 단위로 스코프한다: 전역 파일이던 첫 판은 이 머신의 모든 세션에 남의 루프를 그렸다.
+# 상태 파일이 없으면 아무것도 출력하지 않으므로 루프를 돌리지 않는 세션은 그대로.
+try:
+    _loop = subprocess.run([os.path.expanduser("~/.claude/loop-status.py"),
+                            d.get("session_id") or ""],
+                           capture_output=True, text=True, timeout=1).stdout.strip()
+    if _loop:
+        left.append(_loop)
+except Exception:
+    pass
 cw = d.get("context_window") or {}
 cu = cw.get("used_percentage")
 if cu is not None:
