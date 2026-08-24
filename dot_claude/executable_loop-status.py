@@ -3,29 +3,29 @@
 
 Usage: loop-status.py <session-id>
 
-State lives at ~/.claude/loop-state/<session-id>.json and is written by the loop that is running:
+Detection needs no cooperation from the loop. A self-paced `/loop` records every iteration as a
+`ScheduleWakeup` tool call in the session transcript — the one place the schedule is written to disk —
+so the segment reads that: the last call's timestamp plus its `delaySeconds` is when the loop comes
+back, and `stop: true` is the loop ending. Any session running `/loop` therefore lights up, including
+ones that have never heard of this script.
 
-    {"note": "/abs/path/to/control-note.md",   # the loop's durable control state
-     "label": "channel",                       # fallback name when no milestone is ACTIVE
-     "visibleWithinSeconds": 600,              # after this long with no write, DRIVE is not moving
-     "nextWakeAt": 1787400000}                 # optional: epoch seconds of a scheduled continuation
+Optional enrichment: if ~/.claude/loop-state/<session-id>.json exists and names a control note, the
+segment shows the loop's own milestone and revision instead of a generic label.
 
-Scoped to ONE session on purpose. The first version keyed nothing and lived at a single global path,
-so every other Claude Code session on the machine rendered this session's loop — measured, not
-theorised: a status-line render arrived from session 3a8803a5 while the loop belonged to b765781e.
+    {"note": "/abs/path/to/control-note.md", "label": "channel"}
 
-Three states, because "idle between iterations" and "not running at all" are different facts and the
-first version showed them identically:
+Three live states, because "idle between iterations" and "not running at all" are different facts:
 
-    ⏵  driving      the note was written moments ago; work is happening now
-    ⏱  idle         nothing written lately, but a continuation is scheduled — still a live loop
-    ⏸  held         blocked on a person; shown however old, because forgetting it is worse
-    (nothing)       no pending wake and nothing written lately: the loop is not running
+    ⏵  driving   the session is working right now
+    ⏱  idle      quiet, but a continuation is scheduled — shows ↻ when it returns
+    ⏸  held      the control note says HOLD: blocked on a person, shown however old
+    (nothing)    no scheduled continuation, or the deadline passed with nothing happening
 
 Presence is the signal. A stopped loop shows nothing at all rather than a grey badge, so there is no
-colour to interpret. Prints nothing when the session has no state file, which is every session that
-is not driving a loop.
+colour to interpret, and a dead schedule does not get to look alive.
 """
+import calendar
+import glob
 import json
 import os
 import re
@@ -33,6 +33,9 @@ import sys
 import time
 
 C = lambda code, s: "\x1b[%sm%s\x1b[0m" % (code, s)
+TAIL_BYTES = 262144          # the last ScheduleWakeup of an active loop sits at the end
+DRIVING_WITHIN = 90          # transcript written this recently → the session is working
+OVERDUE_GRACE = 180          # past the deadline by this much with no new call → not running
 
 
 def age(seconds):
@@ -42,6 +45,43 @@ def age(seconds):
     if seconds < 5400:
         return "%dm" % (seconds // 60)
     return "%dh" % (seconds // 3600)
+
+
+def transcript(session_id):
+    hits = glob.glob(os.path.expanduser("~/.claude/projects/*/%s.jsonl" % session_id))
+    return hits[0] if hits else None
+
+
+def last_wakeup(path):
+    """(scheduled_epoch, stopped) from the most recent ScheduleWakeup call, or None."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            fh.seek(max(0, size - TAIL_BYTES))
+            tail = fh.read().decode("utf-8", "ignore")
+    except Exception:
+        return None
+    for line in reversed(tail.split("\n")):
+        if '"ScheduleWakeup"' not in line:
+            continue
+        try:
+            rec = json.loads(line)
+        except Exception:
+            continue          # a truncated first line from the byte-offset read
+        for block in (rec.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("name") != "ScheduleWakeup":
+                continue
+            args = block.get("input") or {}
+            if args.get("stop"):
+                return (0.0, True)
+            try:
+                # timegm, not mktime-minus-timezone: the transcript stamp is UTC and that
+                # subtraction is off by an hour wherever DST applies.
+                ts = calendar.timegm(time.strptime(rec["timestamp"][:19], "%Y-%m-%dT%H:%M:%S"))
+                return (ts + float(args.get("delaySeconds") or 0), False)
+            except Exception:
+                return None
+    return None
 
 
 def active_milestone(body):
@@ -64,39 +104,52 @@ def active_milestone(body):
     return None
 
 
+def enrichment(session_id):
+    """(label, controller_state) from the optional control note."""
+    path = os.path.join(os.path.expanduser("~/.claude/loop-state"), session_id + ".json")
+    try:
+        cfg = json.load(open(path))
+        body = open(cfg["note"], encoding="utf-8").read()
+    except Exception:
+        return ("loop", None)
+    state = (re.search(r"^- controllerState:\s*(\S+)", body, re.M) or [None, None])[1]
+    rev = (re.search(r"^- stateRevision:\s*(\d+)", body, re.M) or [None, None])[1]
+    label = active_milestone(body) or cfg.get("label") or "loop"
+    return (label + (" r%s" % rev if rev else ""), state)
+
+
 def main():
     if len(sys.argv) < 2 or not sys.argv[1].strip():
         return
-    path = os.path.join(os.path.expanduser("~/.claude/loop-state"), sys.argv[1].strip() + ".json")
-    try:
-        with open(path) as fh:
-            cfg = json.load(fh)
-        body = open(cfg["note"], encoding="utf-8").read()
-        since = time.time() - os.path.getmtime(cfg["note"])
-    except Exception:
-        return
+    sid = sys.argv[1].strip()
+    label, state = enrichment(sid)
 
-    state = (re.search(r"^- controllerState:\s*(\S+)", body, re.M) or [None, "?"])[1]
-    rev = (re.search(r"^- stateRevision:\s*(\d+)", body, re.M) or [None, "?"])[1]
-    where = active_milestone(body) or cfg.get("label") or "loop"
-
-    fresh = since <= float(cfg.get("visibleWithinSeconds", 600))
-    wake_in = float(cfg.get("nextWakeAt", 0)) - time.time()
-
-    # Deliberately NOT the branch colour — the two sit side by side and a reader should never have to
-    # work out which is which.
+    # HOLD is shown however old: it is blocked on a person, and forgetting it is worse than
+    # forgetting a parked loop. Deliberately NOT the branch colour — the two sit side by side.
     if state == "HOLD":
-        icon, col, tail = "⏸", "38;5;214", age(since)
-    elif state == "DRIVE" and fresh:
-        icon, col, tail = "⏵", "38;5;177", age(since)
-    elif state == "DRIVE" and wake_in > 0:
-        # Idle, but a continuation is scheduled: the loop is alive and this is the gap between
-        # iterations, not a stop. Dimmer than driving, and it says when it comes back.
-        icon, col, tail = "⏱", "38;5;146", "↻" + age(wake_in)
-    else:
+        path = transcript(sid)
+        seen = time.time() - os.path.getmtime(path) if path else 0
+        sys.stdout.write(C("38;5;214", "⏸ %s %s" % (label, age(seen))))
         return
 
-    sys.stdout.write(C(col, "%s %s r%s %s" % (icon, where, rev, tail)))
+    path = transcript(sid)
+    if not path:
+        return
+    wake = last_wakeup(path)
+    if not wake:
+        return
+    scheduled, stopped = wake
+    if stopped:
+        return
+
+    now = time.time()
+    if now > scheduled + OVERDUE_GRACE:
+        return          # the deadline passed and nothing scheduled another: not running
+    since = now - os.path.getmtime(path)
+    if since <= DRIVING_WITHIN:
+        sys.stdout.write(C("38;5;177", "⏵ %s %s" % (label, age(since))))
+    else:
+        sys.stdout.write(C("38;5;146", "⏱ %s ↻%s" % (label, age(scheduled - now))))
 
 
 if __name__ == "__main__":
