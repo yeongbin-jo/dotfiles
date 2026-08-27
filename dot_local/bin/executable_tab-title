@@ -1,0 +1,16 @@
+#!/bin/sh
+# 지금 이 pane 의 tmux 탭 제목을 직접 건다(에이전트/사람 공용).
+#   tab-title "무기 VFX 셰이더 이식"   → 그 문구로
+#   tab-title                          → 해제(기본 규칙으로 복귀)
+# 탭 이름 계산 자체는 tmux.conf 의 automatic-rename-format 이 한다.
+# 🚨 옵션만 바꾸면 탭 이름이 안 따라온다. tmux 는 automatic-rename-format 을 "그
+#    pane 이 출력을 냈을 때"만 다시 계산하는데(window.c check_window_name 의
+#    PANE_CHANGED 게이트) 옵션 설정은 출력이 아니다. automatic-rename 을 다시 set
+#    하면 tmux 가 그 창에 PANE_CHANGED 를 세워 재계산을 강제한다.
+[ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || exit 0
+if [ -z "${1:-}" ]; then
+  tmux set-option -p -t "$TMUX_PANE" -u @agent_title
+else
+  tmux set-option -p -t "$TMUX_PANE" @agent_title "$1"
+fi
+exec tmux set-window-option -t "$TMUX_PANE" automatic-rename on

@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""codex UserPromptSubmit 훅 — 사용자 프롬프트 첫 줄을 tmux 탭 제목으로 건다.
+
+왜 이게 필요한가: codex 의 내장 terminal_title 항목에는 "지금 하는 일의 요약"이
+없다. thread-title 은 첫 사용자 메시지로 고정이고(/rename 해야만 바뀜),
+task-progress 는 update_plan 진행 카운터다. 그래서 작업 성격이 피벗해도 탭이
+안 따라온다.
+
+훅 입력(stdin JSON)에는 prompt 가 그대로 들어 있으므로, 새 프롬프트마다
+그 첫 줄을 탭 제목으로 건다 — 모델 호출 0회, 결정론적.
+
+탭 이름은 tmux.conf 의 automatic-rename-format 이 @agent_title 을 최우선으로
+읽어 계산한다. 이 pane 옵션을 쓰는 이유는 codex 가 작업 중 스피너 때문에
+pane_title(OSC 2)을 초당 여러 번 덮어쓰기 때문 — 같은 채널을 두고 다투면 진다.
+
+🚨 set-option 에 -t "$TMUX_PANE" 를 반드시 준다. -t 없는 -p 는 훅을 실행한
+   pane 이 아니라 클라이언트의 활성 pane 에 걸린다(실측: 다른 창이 이름을 뺏겼다).
+"""
+import json
+import os
+import subprocess
+import sys
+
+MAX = 60  # tmux 쪽에서 다시 자르므로 여기선 넉넉히
+
+
+def main() -> int:
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return 0
+    try:
+        data = json.load(sys.stdin)
+    except Exception:
+        return 0
+    prompt = (data.get("prompt") or "").strip()
+    line = next((s.strip() for s in prompt.splitlines() if s.strip()), "")
+    # 슬래시 커맨드(/model, /diff …)는 작업이 아니라 조작이다 — 제목을 바꾸지 않는다.
+    if not line or line.startswith("/"):
+        return 0
+    subprocess.run(
+        ["tmux", "set-option", "-p", "-t", pane, "@agent_title", line[:MAX]],
+        check=False,
+        capture_output=True,
+    )
+    # 옵션 설정은 pane 출력이 아니라서 tmux 가 창 이름을 다시 계산하지 않는다
+    # (check_window_name 의 PANE_CHANGED 게이트). automatic-rename 을 다시 set 하면
+    # 그 창에 PANE_CHANGED 가 서서 재계산이 강제된다.
+    subprocess.run(
+        ["tmux", "set-window-option", "-t", pane, "automatic-rename", "on"],
+        check=False,
+        capture_output=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

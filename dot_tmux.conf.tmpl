@@ -56,10 +56,14 @@ bind r source-file ~/.tmux.conf \; display "tmux.conf reloaded ✓"
 #      (#{pane_current_command} = zsh / vim / …).
 #    · zsh 는 프롬프트로 돌아올 때 .zshrc 의 precmd 훅이 pane_title 을 호스트명으로
 #      되돌린다 → 에이전트가 죽어도 마지막 작업 요약이 얼어붙지 않는다.
+#    · 최우선은 pane 옵션 @agent_title — 에이전트가 명시적으로 건 제목이다.
+#      codex 는 작업 중 스피너로 pane_title(OSC 2)을 초당 여러 번 덮어써서 같은
+#      채널로는 못 이긴다. 그래서 codex 는 UserPromptSubmit 훅(`codex-tab-title-hook`)
+#      이, 사람/에이전트는 `tab-title` 이 이 옵션에 쓴다. 비면 아래 pane_title 로 폴백.
 #    · 24자에서 자른다(상태줄 잠식 방지).
 set -g  allow-rename off
 setw -g automatic-rename on
-setw -g automatic-rename-format '#{?#{||:#{||:#{==:#{pane_title},#{host_short}},#{==:#{pane_title},}},#{m/r:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-,#{pane_title}}},#{pane_current_command},#{=24:pane_title}}'
+setw -g automatic-rename-format '#{?#{!=:#{@agent_title},},#{=24:#{@agent_title}},#{?#{||:#{||:#{==:#{pane_title},#{host_short}},#{==:#{pane_title},}},#{m/r:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-,#{pane_title}}},#{pane_current_command},#{=24:pane_title}}}'
 
 # ============================================================
 #  상태바 — 위쪽 + Kanagawa (미니멀: 배경블록 없음)

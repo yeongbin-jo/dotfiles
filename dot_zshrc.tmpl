@@ -166,6 +166,12 @@ add-zsh-hook chpwd _clear_stale_codex_tmux_workdir
 _reset_tmux_pane_title() {
   [ -n "${TMUX:-}" ] || return 0
   print -n "\e]2;${HOST%%.*}\a"
+  # 에이전트가 명시적으로 건 제목(@agent_title)도 함께 해제 — 셸로 돌아왔으면
+  # 그 작업은 끝났다. codex 는 SessionEnd 훅이 지우지만 강제종료엔 안 돈다.
+  if [ -n "${TMUX_PANE:-}" ]; then
+    tmux set-option -p -t "$TMUX_PANE" -u @agent_title 2>/dev/null
+    tmux set-window-option -t "$TMUX_PANE" automatic-rename on 2>/dev/null
+  fi
 }
 add-zsh-hook precmd _reset_tmux_pane_title
 

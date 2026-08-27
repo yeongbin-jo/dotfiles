@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.local/bin/codex-tab-title-hook"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "tmux set-option -p -t \"$TMUX_PANE\" -u @agent_title 2>/dev/null; tmux set-window-option -t \"$TMUX_PANE\" automatic-rename on 2>/dev/null; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
