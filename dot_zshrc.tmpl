@@ -39,7 +39,8 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # ── PATH ──
 export PATH="$HOME/.orbstack/bin:$PATH"                         # OrbStack docker/kubectl shims
-export PATH="$PATH:$HOME/.local/bin"
+path=("$HOME/.local/bin" "${path[@]:#$HOME/.local/bin}")        # Codex standalone installer
+export PATH
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"                       # psql
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 export PATH="$PATH:$ANDROID_HOME/platform-tools:$ANDROID_HOME/build-tools/36.0.0"
