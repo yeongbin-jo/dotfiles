@@ -8,6 +8,7 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [tui]
+terminal_title = ["task-progress"]
 status_line = [
   "model-with-reasoning",
   "weekly-limit",

@@ -157,6 +157,18 @@ autoload -Uz add-zsh-hook
 add-zsh-hook precmd _clear_stale_codex_tmux_workdir
 add-zsh-hook chpwd _clear_stale_codex_tmux_workdir
 
+# ── tmux 창 이름 stale 방지: 프롬프트로 돌아오면 pane_title 을 기본값(호스트명)으로 ──
+#    창 이름은 tmux.conf 가 #{pane_title} 로 계산한다(= 에이전트가 OSC 2 로 써 넣는
+#    작업 요약). 그 값은 프로세스가 끝나도 남고, oh-my-zsh 는 tmux TERM 에서 `ESC k`
+#    만 쏘므로(allow-rename off = 무시) 아무도 안 지운다 → 에이전트가 죽으면 탭이
+#    마지막 요약에 얼어붙는다. 프롬프트마다 호스트명으로 되돌려 tmux 순정 규칙
+#    (#{pane_current_command}) 으로 복귀시킨다.
+_reset_tmux_pane_title() {
+  [ -n "${TMUX:-}" ] || return 0
+  print -n "\e]2;${HOST%%.*}\a"
+}
+add-zsh-hook precmd _reset_tmux_pane_title
+
 # ── dotfiles 최신화: 공개 소스 + 비공개 오버레이를 한 번에 (drift 방지) ──
 #   chezmoi 소스가 둘(공개 dotfiles + 비공개 dotfiles-private)이라 apply 를 각각 돌려야 함.
 #   dotup 이 둘 다 pull+apply 하고, 비공개 오버레이가 없으면 clone 한다.
