@@ -8,7 +8,7 @@ trust_level = "trusted"
 trust_level = "trusted"
 
 [tui]
-terminal_title = ["task-progress"]
+terminal_title = ["activity", "thread-title"]
 status_line = [
   "model-with-reasoning",
   "weekly-limit",
@@ -19,6 +19,8 @@ status_line = [
 [tui.model_availability_nux]
 "gpt-5.5" = 4
 
+{{- if (index . "codex_linear_mcp") }}
 [mcp_servers.linear]
 url = "https://mcp.linear.app/mcp"
 bearer_token_env_var = "LINEAR_API_KEY"
+{{- end }}
