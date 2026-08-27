@@ -291,7 +291,16 @@ def cmd_snapshot(args) -> int:
         if argv:
             sid = id_from_argv(argv)
             if sid:
+                # argv 의 --resume <id> 는 "시작할 때" 의 세션일 뿐이다. claude 안에서
+                # `/resume` 으로 갈아타면 argv 는 옛 ID 그대로 남는다 — 2026-08-23 실제로
+                # 두 창이 그 상태였고, 원장이 옛 세션을 "확정"으로 기록해 복구가 틀렸다.
+                # 그래서 argv 가 있어도 화면 지문을 대조해, 화면이 **다른** 세션을 확실히
+                # 가리키면(동점·0점 아님) 화면 쪽을 믿는다. 판별 불가면 argv 유지.
                 entry["session_id"], entry["source"] = sid, "argv"
+                screen_sid, why = infer_session_id(w["cwd"], capture_pane(args.session, w["index"]))
+                if screen_sid and screen_sid != sid:
+                    entry["session_id"] = screen_sid
+                    entry["source"] = f"화면 우선(argv {sid[:8]} 와 불일치 — /resume 갈아탐?): {why}"
             else:
                 sid, why = infer_session_id(w["cwd"], capture_pane(args.session, w["index"]))
                 entry["session_id"] = sid
@@ -317,6 +326,26 @@ def cmd_snapshot(args) -> int:
 
     prev = load_ledger()
     merged = merge_ledger(prev, entries)
+
+    # 죽은 창이 물려받은 기록이 **살아있는 다른 창**의 프로세스/세션을 가리키면 그건 허깨비다.
+    # 원장은 창 번호로 물려받는데, 창이 새로 생기거나 번호가 밀리면 옛 index N 의 기록이
+    # 전혀 다른 창에 영원히 눌러앉는다. 2026-08-26 창5(codex)가 창4(claude)의 pid 69368 과
+    # 세션 9db31d94 를 그렇게 물려받아, 복구했으면 같은 대화가 두 창에 뜰 뻔했다.
+    # 살아있는 프로세스가 언제나 정답이므로 죽은 쪽 기록을 버린다.
+    live_pids = {e.get("pid") for e in merged if e["alive"] and e.get("pid")}
+    live_sids = {e.get("session_id") for e in merged if e["alive"] and e.get("session_id")}
+    for e in merged:
+        if e["alive"]:
+            continue
+        if (e.get("pid") and e["pid"] in live_pids) or (
+            e.get("session_id") and e["session_id"] in live_sids
+        ):
+            stale = e.get("session_id")
+            e["pid"] = e["session_id"] = e["model"] = e["argv"] = None
+            e["source"] = (
+                f"물려받은 기록 폐기 — {(stale or '?')[:8]} 는 살아있는 다른 창의 것 "
+                "(창 번호 밀림). 이 창이 무엇이었는지 사람이 확인해야 함"
+            )
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     HISTORY.mkdir(parents=True, exist_ok=True)
@@ -466,13 +495,16 @@ def cmd_restore(args) -> int:
         #    같은 번호의 창이 다른 디렉터리를 가리킨다 — 그대로 resume 하면 그 대화가
         #    엉뚱한 폴더에서 열린다(실측: 창 4가 워크트리 대신 ~/project 를 가리켜
         #    Claude 가 폴더 신뢰 프롬프트를 띄웠다).
-        recorded, current = e.get("cwd"), w["cwd"]
-        if recorded and recorded != current:
+        # ⚠️ 지역변수 이름에 `current` 를 쓰지 말 것 — 위에서 만든 창 맵(`current`)을 덮어써
+        #    다음 순회의 `current.get(idx)` 가 AttributeError 로 죽는다(복구 대상 2개 이상일 때만
+        #    드러나는 섀도잉 버그였음).
+        recorded, cur_cwd = e.get("cwd"), w["cwd"]
+        if recorded and recorded != cur_cwd:
             if not os.path.isdir(recorded):
                 print(
                     f"  [실패]   {idx} {e['name']} — 기록된 디렉터리가 없어졌습니다\n"
                     f"            기록: {recorded}\n"
-                    f"            현재: {current}  ← 어디서 열지 사람이 정해야 합니다"
+                    f"            현재: {cur_cwd}  ← 어디서 열지 사람이 정해야 합니다"
                 )
                 failed += 1
                 continue

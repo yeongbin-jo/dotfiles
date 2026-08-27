@@ -31,9 +31,34 @@ pnpm test
 node --test scripts/policy-check-base-policy.test.mjs
 ```
 
+Enumerate the triggered checks from the workflow FILES, and read each triggered file to its end: one file may define several jobs, and the one that matches the file's name is not the only one that gates. "No such check exists" is a positive claim about the repository — never write it from a file you stopped reading partway.
+
 Then run only the diff-triggered checks whose source of truth exists in the repository:
 
-- affected typecheck, integration, or E2E tests required by `AGENTS.md` or the spec;
+- **applicable test lanes, not file-filtered substitutes.** Preserve the test-lane requirements
+  `AGENTS.md` and the governing spec state. In addition, a lane is mechanically applicable whenever a
+  changed or added test file matches its effective `include` and not its `exclude`. For every
+  applicable lane, read its CI workflow and test config, reproduce its required setup and
+  environment, and run the unfiltered lane command CI executes. Record the lane, what triggered it,
+  the command, any setup difference, and the exit status. A focused run over the files you wrote is
+  additional evidence and NEVER establishes that the lane passed — a suite can be green while the
+  lane is not. If local parity cannot be established, record the lane `UNVERIFIED` with the exact
+  missing capability and a verified later owner. `include`/`exclude` proves test-file membership
+  only; it does not prove coverage of every production path the change affects.
+- **a candidate-red applicable lane cannot be reported PASS.** Name every failing suite — every one,
+  never a `head`/`tail` slice of them. Those may bound what you READ; they may not bound what you
+  REPORT. When the list is too long to include, count it and state the count. Looking up a passing
+  test from a file you have not confirmed is green is confirmation, not evidence. To call a
+  failure pre-existing, run the same unfiltered lane with materially identical setup against a clean
+  base checkout and record both results, sampling repeatedly before claiming flakiness or rate
+  equivalence. If that base run cannot be performed, leave the failure unattributed. An applicable
+  lane still red keeps the verdict `FAIL` (§4). A red lane nobody attributes decays into a red lane
+  nobody reads.
+- **required checks that gate on PR METADATA rather than tree content** — title/branch format,
+  required labels, diff-size budgets. Their rule lives in the workflow and their inputs (the diff,
+  the title you intend to use) are known locally, so evaluate them BEFORE opening the PR. "The PR
+  does not exist yet" makes the check *unrun*, not inapplicable; a green tree that cannot open a
+  conforming PR has not cleared the gate.
 - changed-file lint as an additional local signal while repo-wide lint is not a CI gate;
 - bundle rebuild and byte-freshness tests for committed bundles;
 - leak/denylist checks for every touched public source and generated artifact;
