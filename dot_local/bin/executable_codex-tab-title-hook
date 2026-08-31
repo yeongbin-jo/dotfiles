@@ -21,6 +21,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -79,6 +80,16 @@ GENERIC_IDENTIFIERS = {
     "JSON",
 }
 HOST_IDENTIFIER_RE = re.compile(r"^m\d+(?:-[A-Za-z0-9]+)+$", re.I)
+
+
+def tmux_binary() -> str | None:
+    found = shutil.which("tmux")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"):
+        if os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 def truncate_columns(value: str, limit: int = MAX_COLUMNS) -> str:
@@ -216,18 +227,19 @@ def remember_turn(pane: str, turn_id: str) -> None:
 
 def set_title(pane: str, title: str) -> None:
     title = clean_title(title)
-    if not title:
+    tmux = tmux_binary()
+    if not title or not tmux:
         return
     try:
         subprocess.run(
-            ["tmux", "set-option", "-p", "-t", pane, "@agent_title", title],
+            [tmux, "set-option", "-p", "-t", pane, "@agent_title", title],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         # Force automatic-rename-format to be recalculated immediately.
         subprocess.run(
-            ["tmux", "set-window-option", "-t", pane, "automatic-rename", "on"],
+            [tmux, "set-window-option", "-t", pane, "automatic-rename", "on"],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
