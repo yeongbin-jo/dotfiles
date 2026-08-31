@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Artifact Publish"
+  short_description: "Create, revise, QA, and publish Claude Artifacts"
+  default_prompt: "Use $claude-artifact-publish to create or revise a Claude Artifact, preserve its agreed content and design boundaries, publish it, and verify the public result."
