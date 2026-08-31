@@ -1,55 +1,328 @@
 #!/usr/bin/env python3
-"""codex UserPromptSubmit 훅 — 사용자 프롬프트 첫 줄을 tmux 탭 제목으로 건다.
+"""Keep a tmux pane title aligned with the current Codex turn's intent.
 
-왜 이게 필요한가: codex 의 내장 terminal_title 항목에는 "지금 하는 일의 요약"이
-없다. thread-title 은 첫 사용자 메시지로 고정이고(/rename 해야만 바뀜),
-task-progress 는 update_plan 진행 카운터다. 그래서 작업 성격이 피벗해도 탭이
-안 따라온다.
+UserPromptSubmit runs before Codex answers. The hook therefore sets a useful
+deterministic title immediately, then asks the already-running Codex turn to
+emit one hidden semantic-title marker in its first assistant message. A
+detached watcher reads that marker from the transcript and replaces the
+fallback. This adds no model request and no shell approval.
 
-훅 입력(stdin JSON)에는 prompt 가 그대로 들어 있으므로, 새 프롬프트마다
-그 첫 줄을 탭 제목으로 건다 — 모델 호출 0회, 결정론적.
+Codex only generates ``thread-title`` when a thread is created or explicitly
+renamed, so session_index.jsonl cannot supply a fresh title on every turn.
 
-탭 이름은 tmux.conf 의 automatic-rename-format 이 @agent_title 을 최우선으로
-읽어 계산한다. 이 pane 옵션을 쓰는 이유는 codex 가 작업 중 스피너 때문에
-pane_title(OSC 2)을 초당 여러 번 덮어쓰기 때문 — 같은 채널을 두고 다투면 진다.
-
-🚨 set-option 에 -t "$TMUX_PANE" 를 반드시 준다. -t 없는 -p 는 훅을 실행한
-   pane 이 아니라 클라이언트의 활성 pane 에 걸린다(실측: 다른 창이 이름을 뺏겼다).
+tmux.conf's automatic-rename-format reads the pane-scoped @agent_title option.
+Always target TMUX_PANE explicitly: ``set-option -p`` without ``-t`` can rename
+the client's active pane instead of the pane that launched this hook.
 """
+
+from __future__ import annotations
+
 import json
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
+import tempfile
+import time
+import unicodedata
 
-MAX = 60  # tmux 쪽에서 다시 자르므로 여기선 넉넉히
+
+MAX_COLUMNS = 44
+WATCH_SECONDS = 600
+POLL_SECONDS = 0.4
+PANE_RE = re.compile(r"^%[0-9]+$")
+TURN_ID_RE = re.compile(r"^[0-9a-f-]{16,64}$", re.I)
+HTML_MARKER_RE = re.compile(
+    r"<!--\s*codex-tab-title\s*:\s*(.*?)\s*-->", re.I | re.S
+)
+REFERENCE_MARKER_RE = re.compile(
+    r'^\[codex-tab-title\]:\s*<codex-title>\s*"([^"\r\n]+)"\s*$',
+    re.I | re.M,
+)
+
+TITLE_CONTEXT = """UI metadata only; this is not a new task. At the very beginning of your first assistant message for this turn (commentary if present, otherwise the final answer), emit exactly one Markdown reference definition in this form:
+[codex-tab-title]: <codex-title> "TITLE"
+Replace TITLE with a concise 2-6 word summary of the user's current work intent. Summarize semantically rather than quoting or truncating the prompt; name the object and action, use the user's language, and keep it within 36 characters. The reference definition is metadata and must not be mentioned or explained in visible prose."""
+
+ACTION_PATTERNS = (
+    (r"고쳐|수정|fix|repair|동작\s*안|안\s*되|broken|bug", "수정"),
+    (r"개선|다듬|polish|improv|refactor", "개선"),
+    (r"구현|만들|추가|implement|build|create|add", "구현"),
+    (r"검증|확인|점검|감사|verify|validate|check|audit|test", "검증"),
+    (r"설계|아키텍처|design|architect", "설계"),
+    (r"배포|발행|publish|deploy|release", "배포"),
+    (r"정리|삭제|제거|clean|remove|delete", "정리"),
+    (r"설명|알려|왜|어떻게|explain|describe|why|how", "설명"),
+    (r"재개|이어서|계속|resume|continue", "재개"),
+)
+
+LEADING_FILLER_RE = re.compile(
+    r"^(?:(?:그리고|그럼|근데|그러면|애초에|정확히는|일단|혹시|너가|네가|이제|지금)\s*)+"
+)
+TRAILING_REQUEST_RE = re.compile(
+    r"(?:해\s*줄\s*수\s*있(?:을까|어|나요)?|해\s*줘|해주세요|부탁(?:해|드립니다)?|"
+    r"가능(?:할까|해)?|can\s+you|could\s+you|please)[?!.\s]*$",
+    re.I,
+)
+IDENTIFIER_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9]*(?:[-_.:/+][A-Za-z0-9]+)+|"
+    r"[A-Z][A-Z0-9]{1,})(?![A-Za-z0-9_])"
+)
+GENERIC_IDENTIFIERS = {
+    "AGENTS.md",
+    "INSTRUCTIONS",
+    "AWS",
+    "CLI",
+    "UI",
+    "URL",
+    "JSON",
+}
+HOST_IDENTIFIER_RE = re.compile(r"^m\d+(?:-[A-Za-z0-9]+)+$", re.I)
+
+
+def truncate_columns(value: str, limit: int = MAX_COLUMNS) -> str:
+    out: list[str] = []
+    width = 0
+    for char in value:
+        char_width = 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        if width + char_width > limit:
+            break
+        out.append(char)
+        width += char_width
+    return "".join(out).rstrip(" -_/·:;,.!?|&")
+
+
+def clean_title(value: str) -> str:
+    value = HTML_MARKER_RE.sub("", value)
+    value = REFERENCE_MARKER_RE.sub("", value)
+    value = re.sub(r"[`*_#]", "", value)
+    value = re.sub(r"\s+", " ", value).strip(" #\t\r\n-–—:;,.!?")
+    return truncate_columns(value)
+
+
+def prompt_sentences(prompt: str) -> list[str]:
+    cleaned = re.sub(r"```.*?```", " ", prompt, flags=re.S)
+    lines: list[str] = []
+    for raw in cleaned.splitlines():
+        line = re.sub(r"^\s*(?:#{1,6}|[-*+]|\d+[.)]|>+)\s*", "", raw).strip()
+        if not line or line.startswith(("/", "<", "http://", "https://")):
+            continue
+        if line in {"INSTRUCTIONS", "AGENTS.md instructions"}:
+            continue
+        lines.append(line)
+    text = " ".join(lines)
+    return [part.strip() for part in re.split(r"(?<=[?!.。！？])\s+|[\r\n]+", text) if part.strip()]
+
+
+def intent_action(text: str) -> str:
+    for pattern, action in ACTION_PATTERNS:
+        if re.search(pattern, text, re.I):
+            return action
+    return "작업"
+
+
+def intent_subject(sentences: list[str], prompt: str) -> str:
+    identifiers = [
+        match.group(0)
+        for match in IDENTIFIER_RE.finditer(prompt)
+        if match.group(0) not in GENERIC_IDENTIFIERS
+        and not HOST_IDENTIFIER_RE.fullmatch(match.group(0))
+        and not match.group(0).startswith(("http:", "https:"))
+    ]
+    if identifiers:
+        # Repeated concrete identifiers are usually the work object; otherwise
+        # the first one is generally introduced before the request.
+        counts = {item: identifiers.count(item) for item in dict.fromkeys(identifiers)}
+        return max(counts, key=lambda item: (counts[item], -identifiers.index(item)))
+
+    source = sentences[-1] if sentences else prompt
+    source = LEADING_FILLER_RE.sub("", source)
+    source = TRAILING_REQUEST_RE.sub("", source)
+    source = re.sub(r"^(?:이거|그거|이 작업|this|that)\s*", "", source, flags=re.I)
+    source = re.sub(
+        r"\s*(?:고쳐|수정|개선|구현|추가|검증|확인|점검|감사|설계|배포|발행|"
+        r"정리|삭제|제거|설명|알려|재개|이어서|fix|repair|improve|implement|"
+        r"add|verify|check|audit|design|deploy|publish|clean|remove|delete|"
+        r"explain|resume|continue).*$",
+        "",
+        source,
+        flags=re.I,
+    )
+    if len(source) < 3 and len(sentences) > 1:
+        source = LEADING_FILLER_RE.sub("", sentences[-2])
+    return clean_title(source)
+
+
+def prompt_title(prompt: str) -> str:
+    """Produce a short immediate fallback; the model marker refines it."""
+    sentences = prompt_sentences(prompt)
+    if not sentences:
+        return ""
+    subject = intent_subject(sentences, prompt)
+    # The last sentence usually carries the actual ask; earlier sentences are
+    # background and can contain misleading verbs such as "implemented".
+    action = intent_action(sentences[-1])
+    if not subject:
+        return clean_title(sentences[-1])
+    if subject.endswith(action):
+        return clean_title(subject)
+    return clean_title(f"{subject} {action}")
+
+
+def extract_marker(raw_jsonl: str) -> str:
+    for raw in raw_jsonl.splitlines():
+        try:
+            item = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        payload = item.get("payload") if item.get("type") == "response_item" else None
+        if not isinstance(payload, dict) or payload.get("type") != "message":
+            continue
+        if payload.get("role") != "assistant":
+            continue
+        for content in payload.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if not isinstance(text, str):
+                continue
+            for marker_re in (REFERENCE_MARKER_RE, HTML_MARKER_RE):
+                match = marker_re.search(text)
+                if match:
+                    return clean_title(match.group(1))
+    return ""
+
+
+def state_path(pane: str) -> Path:
+    return Path(tempfile.gettempdir()) / f"codex-tab-title-{os.getuid()}-{pane[1:]}.state"
+
+
+def current_turn(pane: str) -> str:
+    try:
+        return state_path(pane).read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def remember_turn(pane: str, turn_id: str) -> None:
+    path = state_path(pane)
+    try:
+        path.write_text(turn_id, encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def set_title(pane: str, title: str) -> None:
+    title = clean_title(title)
+    if not title:
+        return
+    try:
+        subprocess.run(
+            ["tmux", "set-option", "-p", "-t", pane, "@agent_title", title],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        # Force automatic-rename-format to be recalculated immediately.
+        subprocess.run(
+            ["tmux", "set-window-option", "-t", pane, "automatic-rename", "on"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        # A hook must never block prompt submission because tmux disappeared or
+        # PATH changed between session startup and hook execution.
+        return
+
+
+def watch_transcript(transcript: Path, offset: int, pane: str, turn_id: str) -> int:
+    deadline = time.monotonic() + WATCH_SECONDS
+    while time.monotonic() < deadline:
+        if current_turn(pane) != turn_id:
+            return 0
+        try:
+            with transcript.open("r", encoding="utf-8") as handle:
+                handle.seek(offset)
+                title = extract_marker(handle.read())
+        except OSError:
+            title = ""
+        if title:
+            if current_turn(pane) == turn_id:
+                set_title(pane, title)
+            return 0
+        time.sleep(POLL_SECONDS)
+    return 0
+
+
+def emit_title_context() -> None:
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": TITLE_CONTEXT,
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def main() -> int:
-    pane = os.environ.get("TMUX_PANE")
-    if not os.environ.get("TMUX") or not pane:
+    if len(sys.argv) == 6 and sys.argv[1] == "--watch":
+        transcript_raw, offset_raw, pane, turn_id = sys.argv[2:]
+        if not PANE_RE.fullmatch(pane) or not TURN_ID_RE.fullmatch(turn_id):
+            return 0
+        try:
+            offset = max(0, int(offset_raw))
+        except ValueError:
+            return 0
+        return watch_transcript(Path(transcript_raw), offset, pane, turn_id)
+
+    if len(sys.argv) == 2 and sys.argv[1] == "--summarize":
+        print(prompt_title(sys.stdin.read()))
+        return 0
+    if len(sys.argv) == 2 and sys.argv[1] == "--extract-marker":
+        print(extract_marker(sys.stdin.read()))
+        return 0
+
+    pane = os.environ.get("TMUX_PANE", "")
+    if not os.environ.get("TMUX") or not PANE_RE.fullmatch(pane):
         return 0
     try:
         data = json.load(sys.stdin)
     except Exception:
         return 0
-    prompt = (data.get("prompt") or "").strip()
-    line = next((s.strip() for s in prompt.splitlines() if s.strip()), "")
-    # 슬래시 커맨드(/model, /diff …)는 작업이 아니라 조작이다 — 제목을 바꾸지 않는다.
-    if not line or line.startswith("/"):
+
+    prompt = str(data.get("prompt") or "").strip()
+    if not prompt or prompt.startswith("/"):
         return 0
-    subprocess.run(
-        ["tmux", "set-option", "-p", "-t", pane, "@agent_title", line[:MAX]],
-        check=False,
-        capture_output=True,
-    )
-    # 옵션 설정은 pane 출력이 아니라서 tmux 가 창 이름을 다시 계산하지 않는다
-    # (check_window_name 의 PANE_CHANGED 게이트). automatic-rename 을 다시 set 하면
-    # 그 창에 PANE_CHANGED 가 서서 재계산이 강제된다.
-    subprocess.run(
-        ["tmux", "set-window-option", "-t", pane, "automatic-rename", "on"],
-        check=False,
-        capture_output=True,
-    )
+    fallback = prompt_title(prompt)
+    if fallback:
+        set_title(pane, fallback)
+
+    turn_id = str(data.get("turn_id") or "")
+    transcript_raw = data.get("transcript_path")
+    if TURN_ID_RE.fullmatch(turn_id) and isinstance(transcript_raw, str) and transcript_raw:
+        transcript = Path(transcript_raw)
+        try:
+            offset = transcript.stat().st_size
+        except OSError:
+            offset = 0
+        remember_turn(pane, turn_id)
+        subprocess.Popen(
+            [sys.executable, __file__, "--watch", str(transcript), str(offset), pane, turn_id],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    emit_title_context()
     return 0
 
 
