@@ -10,12 +10,47 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.local/bin/codex-tab-title-hook --reconcile",
+            "async": true,
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.local/bin/codex-tab-title-hook --reconcile",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$HOME/.local/bin/codex-tab-title-hook --invalidate",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "tmux set-option -p -t \"$TMUX_PANE\" -u @agent_title 2>/dev/null; tmux set-window-option -t \"$TMUX_PANE\" automatic-rename on 2>/dev/null; exit 0"
+            "command": "$HOME/.local/bin/codex-tab-title-hook --clear",
+            "timeout": 3
           }
         ]
       }

@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Keep a tmux pane title aligned with the current Codex turn's intent.
+"""Keep a tmux tab aligned with the current Codex intent.
 
-UserPromptSubmit runs before Codex answers. The hook therefore sets a useful
-deterministic title immediately, then asks the already-running Codex turn to
-emit one hidden semantic-title marker in its first assistant message. A
-detached watcher reads that marker from the transcript and replaces the
-fallback. This adds no model request and no shell approval.
+UserPromptSubmit asks the already-running Codex turn for a semantic title. A
+short-lived watcher applies the first marker quickly; PostToolUse and Stop
+hooks reconcile missed or later markers. State is pane-scoped and generation-
+scoped so steered prompts that share a Codex turn_id cannot race each other.
 
-Codex only generates ``thread-title`` when a thread is created or explicitly
-renamed, so session_index.jsonl cannot supply a fresh title on every turn.
-
-tmux.conf's automatic-rename-format reads the pane-scoped @agent_title option.
-Always target TMUX_PANE explicitly: ``set-option -p`` without ``-t`` can rename
-the client's active pane instead of the pane that launched this hook.
+The transcript is only a best-effort fast path. Parsing is isolated here and
+accepts both the current marker and historical marker variants. Hook failures
+never block Codex, but they are recorded in a private local event log.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -29,57 +29,24 @@ import time
 import unicodedata
 
 
-MAX_COLUMNS = 44
-WATCH_SECONDS = 600
-POLL_SECONDS = 0.4
+MAX_COLUMNS = 24
+WATCH_SECONDS = 60
+POLL_INITIAL_SECONDS = 0.15
+POLL_MAX_SECONDS = 1.0
+LOG_MAX_BYTES = 1_000_000
 PANE_RE = re.compile(r"^%[0-9]+$")
-TURN_ID_RE = re.compile(r"^[0-9a-f-]{16,64}$", re.I)
+GENERATION_RE = re.compile(r"^[0-9a-f]{24}$")
 HTML_MARKER_RE = re.compile(
     r"<!--\s*codex-tab-title\s*:\s*(.*?)\s*-->", re.I | re.S
 )
-REFERENCE_MARKER_RE = re.compile(
-    r'^\[codex-tab-title\]:\s*<codex-title>\s*"([^"\r\n]+)"\s*$',
-    re.I | re.M,
+REFERENCE_LINE_RE = re.compile(
+    r"^\[codex-tab-title\]:\s*(.*?)\s*$", re.I | re.M
 )
+TRAILING_QUOTED_TITLE_RE = re.compile(r'"([^"\r\n]+)"\s*$')
 
-TITLE_CONTEXT = """UI metadata only; this is not a new task. At the very beginning of your first assistant message for this turn (commentary if present, otherwise the final answer), emit exactly one Markdown reference definition in this form:
-[codex-tab-title]: <codex-title> "TITLE"
-Replace TITLE with a concise 2-6 word summary of the user's current work intent. Summarize semantically rather than quoting or truncating the prompt; name the object and action, use the user's language, and keep it within 36 characters. The reference definition is metadata and must not be mentioned or explained in visible prose."""
-
-ACTION_PATTERNS = (
-    (r"고쳐|수정|fix|repair|동작\s*안|안\s*되|broken|bug", "수정"),
-    (r"개선|다듬|polish|improv|refactor", "개선"),
-    (r"구현|만들|추가|implement|build|create|add", "구현"),
-    (r"검증|확인|점검|감사|verify|validate|check|audit|test", "검증"),
-    (r"설계|아키텍처|design|architect", "설계"),
-    (r"배포|발행|publish|deploy|release", "배포"),
-    (r"정리|삭제|제거|clean|remove|delete", "정리"),
-    (r"설명|알려|왜|어떻게|explain|describe|why|how", "설명"),
-    (r"재개|이어서|계속|resume|continue", "재개"),
-)
-
-LEADING_FILLER_RE = re.compile(
-    r"^(?:(?:그리고|그럼|근데|그러면|애초에|정확히는|일단|혹시|너가|네가|이제|지금)\s*)+"
-)
-TRAILING_REQUEST_RE = re.compile(
-    r"(?:해\s*줄\s*수\s*있(?:을까|어|나요)?|해\s*줘|해주세요|부탁(?:해|드립니다)?|"
-    r"가능(?:할까|해)?|can\s+you|could\s+you|please)[?!.\s]*$",
-    re.I,
-)
-IDENTIFIER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])(?:[A-Za-z][A-Za-z0-9]*(?:[-_.:/+][A-Za-z0-9]+)+|"
-    r"[A-Z][A-Z0-9]{1,})(?![A-Za-z0-9_])"
-)
-GENERIC_IDENTIFIERS = {
-    "AGENTS.md",
-    "INSTRUCTIONS",
-    "AWS",
-    "CLI",
-    "UI",
-    "URL",
-    "JSON",
-}
-HOST_IDENTIFIER_RE = re.compile(r"^m\d+(?:-[A-Za-z0-9]+)+$", re.I)
+TITLE_CONTEXT = """UI metadata only; this is not a new task. At the very beginning of your first assistant message for this turn (commentary if present, otherwise the final answer), emit exactly one hidden title marker in this form:
+<!-- codex-tab-title: TITLE -->
+Replace TITLE with a concise 2-6 word summary of the user's current work intent. Name the distinguishing object and action, use the user's language, and keep it within 24 display columns. Preserve the underlying task for status-only follow-ups. Do not change the title for routine phases such as reading, editing, or testing. If the user's dominant intent materially changes later in the same turn, emit one updated marker at the beginning of the next assistant commentary. The marker is UI metadata and must not be mentioned or explained in visible prose."""
 
 
 def tmux_binary() -> str | None:
@@ -105,167 +72,280 @@ def truncate_columns(value: str, limit: int = MAX_COLUMNS) -> str:
 
 
 def clean_title(value: str) -> str:
-    value = HTML_MARKER_RE.sub("", value)
-    value = REFERENCE_MARKER_RE.sub("", value)
+    value = re.sub(r"[\x00-\x1f\x7f]", " ", value)
     value = re.sub(r"[`*_#]", "", value)
     value = re.sub(r"\s+", " ", value).strip(" #\t\r\n-–—:;,.!?")
+    if value.lower() in {"title", "codex-title", "<codex-title>"}:
+        return ""
     return truncate_columns(value)
 
 
-def prompt_sentences(prompt: str) -> list[str]:
-    cleaned = re.sub(r"```.*?```", " ", prompt, flags=re.S)
-    lines: list[str] = []
-    for raw in cleaned.splitlines():
-        line = re.sub(r"^\s*(?:#{1,6}|[-*+]|\d+[.)]|>+)\s*", "", raw).strip()
-        if not line or line.startswith(("/", "<", "http://", "https://")):
-            continue
-        if line in {"INSTRUCTIONS", "AGENTS.md instructions"}:
-            continue
-        lines.append(line)
-    text = " ".join(lines)
-    return [part.strip() for part in re.split(r"(?<=[?!.。！？])\s+|[\r\n]+", text) if part.strip()]
+def extract_text_marker(text: str) -> str:
+    """Return the last valid marker from one assistant message."""
+    candidates: list[tuple[int, str]] = []
+    for match in HTML_MARKER_RE.finditer(text):
+        candidates.append((match.start(), match.group(1)))
+    for match in REFERENCE_LINE_RE.finditer(text):
+        raw = match.group(1).strip()
+        quoted = TRAILING_QUOTED_TITLE_RE.search(raw)
+        if quoted:
+            raw = quoted.group(1)
+        else:
+            raw = re.sub(r"^<codex-title>\s*", "", raw, flags=re.I)
+        candidates.append((match.start(), raw))
+    for _, raw in sorted(candidates, reverse=True):
+        title = clean_title(raw)
+        if title:
+            return title
+    return ""
 
 
-def intent_action(text: str) -> str:
-    for pattern, action in ACTION_PATTERNS:
-        if re.search(pattern, text, re.I):
-            return action
-    return "작업"
+def assistant_texts(item: dict) -> list[str]:
+    """Adapt currently observed rollout shapes behind one compatibility seam."""
+    texts: list[str] = []
+    payload = item.get("payload")
+    if not isinstance(payload, dict):
+        return texts
 
+    if (
+        item.get("type") == "response_item"
+        and payload.get("type") == "message"
+        and payload.get("role") == "assistant"
+    ):
+        for content in payload.get("content") or []:
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                texts.append(content["text"])
 
-def intent_subject(sentences: list[str], prompt: str) -> str:
-    identifiers = [
-        match.group(0)
-        for match in IDENTIFIER_RE.finditer(prompt)
-        if match.group(0) not in GENERIC_IDENTIFIERS
-        and not HOST_IDENTIFIER_RE.fullmatch(match.group(0))
-        and not match.group(0).startswith(("http:", "https:"))
-    ]
-    if identifiers:
-        # Repeated concrete identifiers are usually the work object; otherwise
-        # the first one is generally introduced before the request.
-        counts = {item: identifiers.count(item) for item in dict.fromkeys(identifiers)}
-        return max(counts, key=lambda item: (counts[item], -identifiers.index(item)))
+    completed = payload.get("item") if payload.get("type") == "item_completed" else None
+    if isinstance(completed, dict) and completed.get("type") == "AgentMessage":
+        for content in completed.get("content") or []:
+            if isinstance(content, dict) and isinstance(content.get("text"), str):
+                texts.append(content["text"])
 
-    source = sentences[-1] if sentences else prompt
-    source = LEADING_FILLER_RE.sub("", source)
-    source = TRAILING_REQUEST_RE.sub("", source)
-    source = re.sub(r"^(?:이거|그거|이 작업|this|that)\s*", "", source, flags=re.I)
-    source = re.sub(
-        r"\s*(?:고쳐|수정|개선|구현|추가|검증|확인|점검|감사|설계|배포|발행|"
-        r"정리|삭제|제거|설명|알려|재개|이어서|fix|repair|improve|implement|"
-        r"add|verify|check|audit|design|deploy|publish|clean|remove|delete|"
-        r"explain|resume|continue).*$",
-        "",
-        source,
-        flags=re.I,
-    )
-    if len(source) < 3 and len(sentences) > 1:
-        source = LEADING_FILLER_RE.sub("", sentences[-2])
-    return clean_title(source)
-
-
-def prompt_title(prompt: str) -> str:
-    """Produce a short immediate fallback; the model marker refines it."""
-    sentences = prompt_sentences(prompt)
-    if not sentences:
-        return ""
-    subject = intent_subject(sentences, prompt)
-    # The last sentence usually carries the actual ask; earlier sentences are
-    # background and can contain misleading verbs such as "implemented".
-    action = intent_action(sentences[-1])
-    if not subject:
-        return clean_title(sentences[-1])
-    if subject.endswith(action):
-        return clean_title(subject)
-    return clean_title(f"{subject} {action}")
+    last_message = payload.get("last_agent_message")
+    if payload.get("type") == "task_complete" and isinstance(last_message, str):
+        texts.append(last_message)
+    return texts
 
 
 def extract_marker(raw_jsonl: str) -> str:
+    title = ""
     for raw in raw_jsonl.splitlines():
         try:
             item = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        payload = item.get("payload") if item.get("type") == "response_item" else None
-        if not isinstance(payload, dict) or payload.get("type") != "message":
+        if not isinstance(item, dict):
             continue
-        if payload.get("role") != "assistant":
-            continue
-        for content in payload.get("content") or []:
-            if not isinstance(content, dict):
-                continue
-            text = content.get("text")
-            if not isinstance(text, str):
-                continue
-            for marker_re in (REFERENCE_MARKER_RE, HTML_MARKER_RE):
-                match = marker_re.search(text)
-                if match:
-                    return clean_title(match.group(1))
-    return ""
+        for message in assistant_texts(item):
+            candidate = extract_text_marker(message)
+            if candidate:
+                title = candidate
+    return title
 
 
 def state_path(pane: str) -> Path:
-    return Path(tempfile.gettempdir()) / f"codex-tab-title-{os.getuid()}-{pane[1:]}.state"
+    return Path(tempfile.gettempdir()) / (
+        f"codex-tab-title-{os.getuid()}-{tmux_namespace()}-{pane[1:]}.json"
+    )
 
 
-def current_turn(pane: str) -> str:
+def lock_path(pane: str) -> Path:
+    return Path(tempfile.gettempdir()) / (
+        f"codex-tab-title-{os.getuid()}-{tmux_namespace()}-{pane[1:]}.lock"
+    )
+
+
+def tmux_namespace() -> str:
+    socket = os.environ.get("TMUX", "").split(",", 1)[0]
+    return hashlib.sha256(socket.encode()).hexdigest()[:12]
+
+
+def log_path() -> Path:
+    return Path.home() / ".local" / "state" / "codex-tab-title" / "events.jsonl"
+
+
+@contextmanager
+def pane_lock(pane: str):
+    path = lock_path(pane)
+    with path.open("a+", encoding="utf-8") as handle:
+        os.chmod(path, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def read_state(pane: str) -> dict:
     try:
-        return state_path(pane).read_text(encoding="utf-8").strip()
-    except OSError:
-        return ""
+        value = json.loads(state_path(pane).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
-def remember_turn(pane: str, turn_id: str) -> None:
-    path = state_path(pane)
+def write_state(pane: str, state: dict) -> None:
+    target = state_path(pane)
+    fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
     try:
-        path.write_text(turn_id, encoding="utf-8")
-        path.chmod(0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, ensure_ascii=False, separators=(",", ":"))
+            handle.write("\n")
+        os.replace(temporary, target)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def remove_state(pane: str) -> None:
+    try:
+        state_path(pane).unlink()
     except OSError:
         pass
 
 
-def set_title(pane: str, title: str) -> None:
-    title = clean_title(title)
-    tmux = tmux_binary()
-    if not title or not tmux:
-        return
+def log_event(event: str, **details: object) -> None:
     try:
-        subprocess.run(
-            [tmux, "set-option", "-p", "-t", pane, "@agent_title", title],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        # Force automatic-rename-format to be recalculated immediately.
-        subprocess.run(
-            [tmux, "set-window-option", "-t", pane, "automatic-rename", "on"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        path = log_path()
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(path.parent, 0o700)
+        if path.exists() and path.stat().st_size >= LOG_MAX_BYTES:
+            os.replace(path, path.with_suffix(".jsonl.1"))
+        record = {
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "event": event,
+            **details,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            os.chmod(path, 0o600)
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
     except OSError:
-        # A hook must never block prompt submission because tmux disappeared or
-        # PATH changed between session startup and hook execution.
-        return
+        pass
 
 
-def watch_transcript(transcript: Path, offset: int, pane: str, turn_id: str) -> int:
-    deadline = time.monotonic() + WATCH_SECONDS
-    while time.monotonic() < deadline:
-        if current_turn(pane) != turn_id:
-            return 0
-        try:
-            with transcript.open("r", encoding="utf-8") as handle:
-                handle.seek(offset)
-                title = extract_marker(handle.read())
-        except OSError:
-            title = ""
+def tmux_run(*args: str, capture: bool = False) -> subprocess.CompletedProcess[str] | None:
+    tmux = tmux_binary()
+    if not tmux:
+        return None
+    try:
+        return subprocess.run(
+            [tmux, *args],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=2,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def current_title(pane: str) -> str:
+    result = tmux_run("show-options", "-p", "-v", "-t", pane, "@agent_title", capture=True)
+    if result is None or result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def set_title(pane: str, title: str, source: str) -> bool:
+    title = clean_title(title)
+    if not title:
+        return False
+    if current_title(pane) == title:
+        return True
+    result = tmux_run("set-option", "-p", "-t", pane, "@agent_title", title)
+    if result is None or result.returncode != 0:
+        log_event("tmux_error", pane=pane, operation="set", source=source)
+        return False
+    refresh = tmux_run("set-window-option", "-t", pane, "automatic-rename", "on")
+    if refresh is None or refresh.returncode != 0:
+        log_event("tmux_error", pane=pane, operation="refresh", source=source)
+        return False
+    log_event("title_applied", pane=pane, source=source, title=title)
+    return True
+
+
+def clear_title(pane: str, source: str) -> None:
+    tmux_run("set-option", "-p", "-t", pane, "-u", "@agent_title")
+    tmux_run("set-window-option", "-t", pane, "automatic-rename", "on")
+    log_event("title_cleared", pane=pane, source=source)
+
+
+def read_complete_jsonl(path: Path, offset: int) -> tuple[str, int]:
+    try:
+        size = path.stat().st_size
+        if size < offset:
+            offset = 0
+        with path.open("rb") as handle:
+            handle.seek(offset)
+            raw = handle.read()
+    except OSError:
+        return "", offset
+    last_newline = raw.rfind(b"\n")
+    if last_newline < 0:
+        return "", offset
+    consumed = raw[: last_newline + 1]
+    return consumed.decode("utf-8", errors="replace"), offset + len(consumed)
+
+
+def reconcile(pane: str, source: str, generation: str | None = None, direct_text: str = "") -> bool:
+    with pane_lock(pane):
+        state = read_state(pane)
+        if not state:
+            return False
+        if generation is not None and state.get("generation") != generation:
+            return False
+
+        title = extract_text_marker(direct_text) if direct_text else ""
+        transcript_raw = state.get("transcript_path")
+        cursor = state.get("cursor", 0)
+        if not isinstance(cursor, int) or cursor < 0:
+            cursor = 0
+        if isinstance(transcript_raw, str) and transcript_raw:
+            chunk, cursor = read_complete_jsonl(Path(transcript_raw), cursor)
+            state["cursor"] = cursor
+            transcript_title = extract_marker(chunk)
+            if transcript_title:
+                title = transcript_title
+
+        applied = False
         if title:
-            if current_turn(pane) == turn_id:
-                set_title(pane, title)
+            applied = set_title(pane, title, source)
+            if applied:
+                state["title"] = title
+                state["applied_at"] = time.time()
+        write_state(pane, state)
+        return applied
+
+
+def watch_transcript(pane: str, generation: str) -> int:
+    deadline = time.monotonic() + WATCH_SECONDS
+    delay = POLL_INITIAL_SECONDS
+    while time.monotonic() < deadline:
+        state = read_state(pane)
+        if state.get("generation") != generation:
+            log_event("watcher_invalidated", pane=pane, generation=generation)
             return 0
-        time.sleep(POLL_SECONDS)
+        if state.get("title"):
+            return 0
+        if reconcile(pane, "watcher", generation=generation):
+            return 0
+        state = read_state(pane)
+        if state.get("generation") != generation:
+            log_event("watcher_invalidated", pane=pane, generation=generation)
+            return 0
+        time.sleep(delay)
+        delay = min(POLL_MAX_SECONDS, delay * 1.5)
+    log_event("watcher_timeout", pane=pane, generation=generation)
     return 0
 
 
@@ -283,60 +363,102 @@ def emit_title_context() -> None:
     )
 
 
-def main() -> int:
-    if len(sys.argv) == 6 and sys.argv[1] == "--watch":
-        transcript_raw, offset_raw, pane, turn_id = sys.argv[2:]
-        if not PANE_RE.fullmatch(pane) or not TURN_ID_RE.fullmatch(turn_id):
-            return 0
-        try:
-            offset = max(0, int(offset_raw))
-        except ValueError:
-            return 0
-        return watch_transcript(Path(transcript_raw), offset, pane, turn_id)
+def load_hook_input() -> dict:
+    try:
+        value = json.load(sys.stdin)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
 
-    if len(sys.argv) == 2 and sys.argv[1] == "--summarize":
-        print(prompt_title(sys.stdin.read()))
-        return 0
-    if len(sys.argv) == 2 and sys.argv[1] == "--extract-marker":
-        print(extract_marker(sys.stdin.read()))
-        return 0
 
+def valid_pane() -> str:
     pane = os.environ.get("TMUX_PANE", "")
     if not os.environ.get("TMUX") or not PANE_RE.fullmatch(pane):
-        return 0
-    try:
-        data = json.load(sys.stdin)
-    except Exception:
-        return 0
+        return ""
+    return pane
 
+
+def begin_prompt(pane: str, data: dict) -> int:
     prompt = str(data.get("prompt") or "").strip()
     if not prompt or prompt.startswith("/"):
         return 0
-    fallback = prompt_title(prompt)
-    if fallback:
-        set_title(pane, fallback)
-
-    turn_id = str(data.get("turn_id") or "")
     transcript_raw = data.get("transcript_path")
-    if TURN_ID_RE.fullmatch(turn_id) and isinstance(transcript_raw, str) and transcript_raw:
-        transcript = Path(transcript_raw)
-        try:
-            offset = transcript.stat().st_size
-        except OSError:
-            offset = 0
-        remember_turn(pane, turn_id)
-        subprocess.Popen(
-            [sys.executable, __file__, "--watch", str(transcript), str(offset), pane, turn_id],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-
+    transcript = Path(transcript_raw) if isinstance(transcript_raw, str) and transcript_raw else None
+    try:
+        offset = transcript.stat().st_size if transcript else 0
+    except OSError:
+        offset = 0
+    generation = secrets.token_hex(12)
+    state = {
+        "generation": generation,
+        "session_id": str(data.get("session_id") or ""),
+        "turn_id": str(data.get("turn_id") or ""),
+        "transcript_path": str(transcript) if transcript else "",
+        "cursor": offset,
+        "started_at": time.time(),
+    }
+    with pane_lock(pane):
+        write_state(pane, state)
+        if not current_title(pane):
+            set_title(pane, "작업 파악 중", "pending")
+    subprocess.Popen(
+        [sys.executable, __file__, "--watch", pane, generation],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+    log_event("prompt_started", pane=pane, generation=generation)
     emit_title_context()
     return 0
 
 
+def invalidate(pane: str, source: str, clear: bool) -> int:
+    with pane_lock(pane):
+        remove_state(pane)
+        if clear:
+            clear_title(pane, source)
+    return 0
+
+
+def main() -> int:
+    if len(sys.argv) == 4 and sys.argv[1] == "--watch":
+        pane, generation = sys.argv[2:]
+        if not PANE_RE.fullmatch(pane) or not GENERATION_RE.fullmatch(generation):
+            return 0
+        return watch_transcript(pane, generation)
+
+    if len(sys.argv) == 2 and sys.argv[1] == "--extract-marker":
+        print(extract_marker(sys.stdin.read()))
+        return 0
+
+    pane = valid_pane()
+    if not pane:
+        return 0
+
+    if len(sys.argv) == 2 and sys.argv[1] == "--reconcile":
+        data = load_hook_input()
+        direct = data.get("last_assistant_message")
+        reconcile(
+            pane,
+            str(data.get("hook_event_name") or "reconcile"),
+            direct_text=direct if isinstance(direct, str) else "",
+        )
+        return 0
+    if len(sys.argv) == 2 and sys.argv[1] == "--invalidate":
+        load_hook_input()
+        return invalidate(pane, "interrupt", clear=False)
+    if len(sys.argv) == 2 and sys.argv[1] == "--clear":
+        load_hook_input()
+        return invalidate(pane, "session_end", clear=True)
+
+    return begin_prompt(pane, load_hook_input())
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as error:
+        log_event("uncaught_error", error=type(error).__name__)
+        sys.exit(0)
