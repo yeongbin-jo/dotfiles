@@ -30,6 +30,13 @@ def response_item(text: str) -> str:
 
 
 class MarkerTests(unittest.TestCase):
+    def test_prompt_uses_hidden_reference_definition(self):
+        self.assertIn(
+            '[codex-tab-title]: <codex-title> "TITLE"',
+            hook.TITLE_CONTEXT,
+        )
+        self.assertNotIn("<!-- codex-tab-title:", hook.TITLE_CONTEXT)
+
     def test_current_html_marker(self):
         self.assertEqual(
             hook.extract_text_marker("<!-- codex-tab-title: 탭 제목 훅 개편 -->\n진행합니다."),

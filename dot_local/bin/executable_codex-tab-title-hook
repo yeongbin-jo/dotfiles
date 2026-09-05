@@ -44,9 +44,9 @@ REFERENCE_LINE_RE = re.compile(
 )
 TRAILING_QUOTED_TITLE_RE = re.compile(r'"([^"\r\n]+)"\s*$')
 
-TITLE_CONTEXT = """UI metadata only; this is not a new task. At the very beginning of your first assistant message for this turn (commentary if present, otherwise the final answer), emit exactly one hidden title marker in this form:
-<!-- codex-tab-title: TITLE -->
-Replace TITLE with a concise 2-6 word summary of the user's current work intent. Name the distinguishing object and action, use the user's language, and keep it within 24 display columns. Preserve the underlying task for status-only follow-ups. Do not change the title for routine phases such as reading, editing, or testing. If the user's dominant intent materially changes later in the same turn, emit one updated marker at the beginning of the next assistant commentary. The marker is UI metadata and must not be mentioned or explained in visible prose."""
+TITLE_CONTEXT = """UI metadata only; this is not a new task. At the very beginning of your first assistant message for this turn (commentary if present, otherwise the final answer), emit exactly one Markdown reference definition in this form:
+[codex-tab-title]: <codex-title> "TITLE"
+Keep <codex-title> literal and replace only TITLE with a concise 2-6 word summary of the user's current work intent. Name the distinguishing object and action, use the user's language, and keep it within 24 display columns. Preserve the underlying task for status-only follow-ups. Do not change the title for routine phases such as reading, editing, or testing. If the user's dominant intent materially changes later in the same turn, emit one updated reference definition at the beginning of the next assistant commentary. The reference definition is UI metadata and must not be mentioned or explained in visible prose."""
 
 
 def tmux_binary() -> str | None:
