@@ -21,3 +21,7 @@ macos.sh
 
 # 파이썬 캐시 — 스킬 스크립트를 import 하면 생기는데 dotfile 이 아니다
 .claude/skills/**/__pycache__
+
+# 저장소 자체 테스트 — $HOME 에 배포하지 않는다
+tests
+tests/**

@@ -40,8 +40,11 @@ not.
    - Otherwise prefer the user's already authenticated controllable Chrome session. If unavailable,
      use another already authenticated browser capability. Try `agent-browser --auto-connect` only
      after those routes fail. Copying browser authentication state into an isolated profile is a
-     sensitive fallback and requires explicit approval; then read
-     [references/browser-session.md](references/browser-session.md).
+     sensitive fallback and requires explicit approval in the current request; a machine name or
+     an earlier run is not approval. Then read
+     [references/browser-session.md](references/browser-session.md), use a normal-rendering Chrome
+     process rather than headless mode, and destroy the ephemeral authentication copy after the
+     public verification gate.
 3. Give Claude the artifact contract and the actual source material. Explicitly request a
    self-contained HTML Artifact, not a prose response. In update mode, state the invariants before
    the requested changes and keep the original authoring conversation when possible.

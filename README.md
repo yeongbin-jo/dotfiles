@@ -13,7 +13,7 @@ secrets with [age](https://age-encryption.org) encryption.
 | `dot_gitconfig.tmpl` | `~/.gitconfig` | delta pager, guarded by `lookPath` |
 | `dot_config/ghostty/config` | `~/.config/ghostty/config` | Ghostty terminal |
 | `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
-| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-for-remote`, `obsidian-vault`) |
+| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-screen`, `obsidian-vault`) |
 | `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | editor and terminal session config |
 
 `iterm2.json` and `macos.sh` are kept for reference and **not** deployed (`.chezmoiignore`d).
@@ -54,8 +54,8 @@ hostnames, tailnet names, keys, or account-specific secrets in this repository.
 ## Remote Work Mode
 
 Use `remote-work-status` to verify that SSH, Tailscale, screen-lock policy, and
-the keep-awake LaunchAgent are ready. Use `lock-for-remote` when leaving the
-machine physically locked but available for SSH/tmux work.
+the keep-awake LaunchAgent are ready. Use `lock-screen` to lock the GUI session
+immediately while keeping the machine available for SSH/tmux work.
 
 ## Obsidian Vault
 

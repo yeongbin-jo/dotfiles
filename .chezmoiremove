@@ -1,0 +1,2 @@
+# 폐기된 헬퍼 — apply 시 모든 기기에서 제거된다
+.local/bin/lock-for-remote

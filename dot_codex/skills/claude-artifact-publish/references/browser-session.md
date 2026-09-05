@@ -5,6 +5,11 @@ and the user has explicitly approved copying authentication state into an epheme
 copy contains sensitive session material. Never place it in a workspace, logs, prompts, or chezmoi.
 On non-macOS machines, stop at the authentication gate rather than adapting this procedure by guess.
 
+This route has been exercised end to end (2026-09-02): reopening an existing Artifact authoring
+chat, revising the same HTML Artifact in place, publishing it, and verifying HTTP 200 on the public
+URL from a separate browser. That records route viability only; it is not permission to skip the
+approval gate, content QA, public verification, or ephemeral-profile destruction.
+
 ## Launch
 
 1. Confirm `agent-browser`, Google Chrome, `curl`, `nc`, and an existing Chrome `Default` profile.
@@ -31,7 +36,10 @@ chmod -R go-rwx "$profile_dir"
 
 3. Choose a localhost port from a narrow private range and refuse a port that is already listening.
    Record both `profile_dir` and `cdp_port`; cleanup authority is limited to those exact values.
-4. Launch a separate Chrome instance. Never close, relaunch, or add flags to the normal Chrome.
+4. Launch a separate, normal-rendering Chrome instance. Never close, relaunch, or add flags to the
+   normal Chrome. Do not use `--headless`: Claude's Cloudflare challenge may reject headless mode
+   even when the copied session is valid. The macOS screen may remain locked because CDP controls
+   the separate Chrome process without Accessibility UI automation.
 
 ```bash
 cdp_port=9223
@@ -52,8 +60,10 @@ curl -fsS "http://127.0.0.1:$cdp_port/json/version" >/dev/null
 agent-browser --session claude-artifact connect "$cdp_port"
 ```
 
-5. Confirm authenticated Claude UI before uploading public material. If the page shows login,
-   challenge, or an unexpected account, stop and clean up.
+5. Select the Claude tab by its `https://claude.ai/` URL instead of assuming the active tab. A copied
+   profile can open an extension welcome page during startup. Confirm authenticated Claude UI before
+   uploading public material. If the Claude tab shows login, challenge, or an unexpected account,
+   stop and clean up.
 
 ## Reliable UI sequence
 
@@ -65,6 +75,10 @@ agent-browser --session claude-artifact connect "$cdp_port"
   `https://claude.ai/public/artifacts/[A-Za-z0-9_-]+`.
 - A clean browser may meet an anti-bot interstitial. That is not proof of privacy; use the main
   workflow's alternate clean interactive verification.
+- For QA, downloading the generated HTML to a restrictive temporary path is allowed only as a
+  faithful render/test input; it is never the deliverable. Exercise the same public URL in a new
+  cookie-free browser context and confirm at least one navigation control plus the critical custom
+  interaction.
 
 ## Cleanup
 
