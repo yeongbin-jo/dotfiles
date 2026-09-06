@@ -131,22 +131,13 @@ set -g @plugin 'tmux-plugins/tpm'
 set -g @plugin 'tmux-plugins/tmux-resurrect'
 set -g @plugin 'tmux-plugins/tmux-continuum'
 
-# 복원 시 다시 띄울 프로그램 화이트리스트 (모니터링 도구들)
-{{- if eq .chezmoi.hostname "m4-mini" }}
-# ★m4-mini 전용 — 운영 런처는 복원 시 그대로 재실행(2026-09-05 재부팅 자동화): nao sole/emperor · fleta 콘솔 서버.
-#   ~접두 = 커맨드라인에 그 문자열이 있으면 전체 커맨드라인으로 되살린다(인자 포함).
-#   다른 기기엔 절대 내려보내지 않는다 — continuum-boot 는 로그인마다 Terminal.app+tmux 를 띄우는 LaunchAgent 를 만든다.
-set -g @resurrect-processes 'btop htop ctop glances "~lazydocker" "~run_sole.sh" "~run_emperor.sh" "~run_fleta.sh"'
-{{- else }}
-set -g @resurrect-processes 'btop htop ctop glances "~lazydocker"'
-{{- end }}
+# 복원 시 다시 띄울 프로그램 화이트리스트 (모니터링 도구들 + 로그 뷰어).
+#  🚨 운영 프로세스(봇·서버)는 여기 넣지 않는다 — 감독은 launchd 몫이다(m4-mini: ~/naokr/launchd.sh).
+#     resurrect 는 마지막 저장본을 서버 시작 때 한 번 재생할 뿐 크래시 재기동을 못 하고, 부팅 자동기동은
+#     자동로그인→Terminal.app→LaunchAgent→tmux→continuum→resurrect 여섯 고리에 매달린다(2026-09-06 launchd 로 이관).
+set -g @resurrect-processes 'btop htop ctop glances tail "~lazydocker"'
 set -g @resurrect-capture-pane-contents 'on'
 set -g @continuum-restore 'on'
-{{- if eq .chezmoi.hostname "m4-mini" }}
-# ★자동 로그인 뒤 Terminal.app + tmux 자동 기동(로그인 항목 LaunchAgent 를 continuum 이 만든다) — 재부팅 후 손 안 대도
-#   창·cwd·런처(위 화이트리스트)가 복원된다. 자동 로그인은 시스템 설정에서 사람이 켠다(관리자 권한).
-set -g @continuum-boot 'on'
-{{- end }}
 
 # nydus-revive — resurrect 가 저장할 때마다 Claude 세션 원장(창→대화 ID)도 같이 갱신.
 #  resurrect 는 @resurrect-processes 화이트리스트만 되살리므로 claude 는 안 살아난다.

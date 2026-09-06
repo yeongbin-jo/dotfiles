@@ -122,7 +122,8 @@ python3 $S install-hook    # continuum 저장마다 snapshot 되도록 ~/.tmux.c
 - **입력창에 타이핑만 하고 안 보낸 텍스트** — UI 상태라 세션에 저장되지 않는다.
 - **effort 레벨**(`/effort xhigh` 등) — CLI 플래그가 없어 세션 UI 상태로만 존재한다.
 - **claude/codex 가 아닌 프로세스**(`python -m nao.bot` 같은 상시 프로세스) — 기록/복구 대상이 아니다.
-  그건 `@resurrect-processes` 에 추가하는 게 정석이다. (참고: m4-mini 의 nydus 가 그런 구성이고,
-  거기 nao 봇 재시작은 사용자 몫 — `reference-nao-bot-runtime` 메모리 참조.)
+  그런 상시 프로세스는 launchd 가 감독하는 게 정석이다(m4-mini 의 nao 봇·fleta 는 2026-09-06 부터
+  `~/naokr/launchd.sh` 의 LaunchAgent 로 돌고, nydus 창은 `tail -F` 뷰어일 뿐이다 — `tail` 은
+  `@resurrect-processes` 에 있어 창째로 돌아온다).
 - 모델은 argv 의 `--model`, 없으면 세션 파일에 기록된 마지막 모델로 복원한다(claude 만).
 - codex 의 MCP OAuth(예: `codex mcp login verticalbar-next`)는 재개 후 다시 로그인해야 할 수 있다.
