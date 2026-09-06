@@ -15,8 +15,6 @@ macos.sh
 .vimrc
 .zshrc
 .zshrc.local
-{{- /* age 키 없는 server 는 .age 접미사를 못 떼므로 양쪽 타겟명(.sh / .sh.age) 모두 무시 */}}
-.tmux/window-name-alias.sh*
 {{- end }}
 
 # 파이썬 캐시 — 스킬 스크립트를 import 하면 생기는데 dotfile 이 아니다

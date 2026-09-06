@@ -1,15 +1,14 @@
 # dotfiles
 
 [chezmoi](https://chezmoi.io)-managed dotfiles for my Apple-Silicon Macs.
-One source for personal Macs. Per-machine differences are handled with Go templates,
-secrets with [age](https://age-encryption.org) encryption.
+One source for personal Macs. Per-machine differences are handled with Go templates.
+Nothing machine- or account-specific lives here (see *Public vs. private overlay*).
 
 ## What's here
 
 | source | target | notes |
 |---|---|---|
 | `dot_zshrc.tmpl` | `~/.zshrc` | oh-my-zsh (agnoster), vi-mode, lazy `nvm`/`pyenv`, modern CLI (fzf/zoxide/eza/bat) |
-| `encrypted_dot_zshrc.local.tmpl` | `~/.zshrc.local` | machine/secret shell config — **age-encrypted** |
 | `dot_gitconfig.tmpl` | `~/.gitconfig` | delta pager, guarded by `lookPath` |
 | `dot_config/ghostty/config` | `~/.config/ghostty/config` | Ghostty terminal |
 | `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
@@ -24,13 +23,13 @@ secrets with [age](https://age-encryption.org) encryption.
 - Runtime managers load only when present (`stat ~/.nvm`, `stat ~/.pyenv`) — fresh
   machines never error on a missing tool.
 - Tool-specific config guarded by `lookPath` (e.g. git's `delta`).
-- Secrets live in an age-encrypted file; the private key is **not** in this repo.
+- No secrets here at all. The private overlay carries them; its one real credential file is [age](https://age-encryption.org)-encrypted, so the age key is still restored on a fresh machine.
 
 ## Fresh Machine
 
 ```sh
 brew install chezmoi age
-# restore the age key to ~/.config/chezmoi/key.txt (from your password manager)
+# restore the age key to ~/.config/chezmoi/key.txt (from your password manager) — used by the private overlay
 chezmoi init --apply yeongbin-jo
 git clone git@github.com:yeongbin-jo/dotfiles-private.git ~/.local/share/chezmoi-private   # private overlay
 dotfiles-sync
@@ -58,7 +57,7 @@ names (Tailscale MagicDNS), key/token signatures, or any pattern listed in
 
 Some setup cannot be safely automated from a public dotfiles repo:
 
-- Restore the age key from the password manager before applying encrypted files.
+- Restore the age key from the password manager before applying the private overlay.
 - Sign in to Tailscale from the GUI and choose the correct tailnet.
 - Grant Karabiner-Elements the macOS permissions it requests.
 - Configure SSH key-only login with administrator privileges.
@@ -77,7 +76,7 @@ immediately while keeping the machine available for SSH/tmux work.
 
 The Obsidian vault is managed as a private Git repository, not in this public
 dotfiles repository. The helper reads its path and remote from
-`~/.config/obsidian-agent/config`, which is age-encrypted in chezmoi.
+`~/.config/obsidian-agent/config`, which the private overlay deploys.
 
 ```sh
 obsidian-vault init
