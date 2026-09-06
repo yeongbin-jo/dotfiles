@@ -15,6 +15,10 @@ secrets with [age](https://age-encryption.org) encryption.
 | `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
 | `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-screen`, `obsidian-vault`) |
 | `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | editor and terminal session config |
+| `dot_claude/encrypted_CLAUDE.md.tmpl.age` | `~/.claude/CLAUDE.md` | **network topology for agents** — per-machine reachability rules; branches on `machine`; **age-encrypted** |
+| `dot_codex/symlink_AGENTS.md.tmpl` | `~/.codex/AGENTS.md` | symlink to `~/.claude/CLAUDE.md` so Codex reads the same topology |
+| `private_Library/private_LaunchAgents/encrypted_com.yb.b5-bridge.plist.age` | `~/Library/LaunchAgents/…` | workstation only: SOCKS + port forwards through a bridge host into the personal tailnet — **age-encrypted** |
+| `dot_config/b5-sshuttle` · `dot_local/bin/…b5-sshuttle-install` | `~/.config/b5-sshuttle`, `~/.local/bin/b5-sshuttle-install` | workstation only: root LaunchDaemon (sshuttle) + `/etc/hosts` names for transparent access to the personal tailnet — **age-encrypted**. Run once: `sudo ~/.local/bin/b5-sshuttle-install` |
 
 `iterm2.json` and `macos.sh` are kept for reference and **not** deployed (`.chezmoiignore`d).
 

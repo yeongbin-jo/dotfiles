@@ -10,6 +10,7 @@ brew "zoxide"                  # z smart-jump
 brew "eza"                     # ls replacement
 brew "bat"                     # cat replacement
 brew "direnv"
+brew "sshuttle"                # workstation: 개인 tailnet 투명 프록시 (sudo ~/.local/bin/b5-sshuttle-install)
 brew "libpq"                   # psql client
 brew "zsh-autosuggestions"
 brew "zsh-syntax-highlighting"

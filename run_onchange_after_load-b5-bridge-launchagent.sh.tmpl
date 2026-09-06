@@ -1,0 +1,17 @@
+#!/bin/sh
+# b5-bridge LaunchAgent loader (m4-air 전용: 개인 tailnet 진입 SOCKS/포워드 터널)
+# plist hash: {{ include "private_Library/private_LaunchAgents/encrypted_com.yb.b5-bridge.plist.age" | sha256sum }}
+set -e
+{{- if and (eq .chezmoi.os "darwin") (eq .machine "m4-air") }}
+PLIST="$HOME/Library/LaunchAgents/com.yb.b5-bridge.plist"
+LABEL="com.yb.b5-bridge"
+DOMAIN="gui/$(id -u)"
+[ -f "$PLIST" ] || exit 0
+launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+echo "[b5-bridge] loaded $LABEL"
+{{- else }}
+echo "[b5-bridge] skipped (not m4-air)"
+{{- end }}

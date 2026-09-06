@@ -25,3 +25,10 @@ macos.sh
 # 저장소 자체 테스트 — $HOME 에 배포하지 않는다
 tests
 tests/**
+
+# ── m4-air 전용: 개인 tailnet 진입 터널 (b5-bridge LaunchAgent, sshuttle 데몬/설치기) ──
+{{- if ne .machine "m4-air" }}
+Library/LaunchAgents/com.yb.b5-bridge.plist
+.config/b5-sshuttle
+.local/bin/b5-sshuttle-install
+{{- end }}
