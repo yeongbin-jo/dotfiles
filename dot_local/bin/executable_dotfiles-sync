@@ -4,6 +4,7 @@
 #   2) private overlay git pull  (~/.local/share/chezmoi-private)
 #   3) chezmoi -S <private> apply
 # private 이 public 을 덮으므로 항상 이 순서. 둘 중 하나만 apply 하면 역할이 어긋난다.
+# zsh 의 `dotup` 은 이 스크립트의 래퍼.
 set -eu
 PRIV="${DOTFILES_PRIVATE:-$HOME/.local/share/chezmoi-private}"
 
@@ -11,12 +12,12 @@ echo "== public: chezmoi update =="
 chezmoi update "$@"
 
 if [ ! -d "$PRIV/.git" ]; then
-  echo "== private overlay 없음: $PRIV ==" >&2
-  echo "   git clone git@github.com:yeongbin-jo/dotfiles-private.git \"$PRIV\"  후 다시 실행" >&2
-  exit 1
+  echo "== private overlay 없음 → clone ($PRIV) =="
+  git clone -q git@github.com:yeongbin-jo/dotfiles-private.git "$PRIV"
+else
+  echo "== private: git pull ($PRIV) =="
+  git -C "$PRIV" pull -q --ff-only
 fi
-echo "== private: git pull ($PRIV) =="
-git -C "$PRIV" pull -q --ff-only
 echo "== private: chezmoi -S $PRIV apply =="
 chezmoi -S "$PRIV" apply "$@"
 echo "== done =="

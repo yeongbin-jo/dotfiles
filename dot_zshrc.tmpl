@@ -177,20 +177,9 @@ add-zsh-hook precmd _reset_tmux_pane_title
 
 # ── dotfiles 최신화: 공개 소스 + 비공개 오버레이를 한 번에 (drift 방지) ──
 #   chezmoi 소스가 둘(공개 dotfiles + 비공개 dotfiles-private)이라 apply 를 각각 돌려야 함.
-#   dotup 이 둘 다 pull+apply 하고, 비공개 오버레이가 없으면 clone 한다.
+#   구현은 ~/.local/bin/dotfiles-sync (non-interactive/에이전트에서도 쓰도록 스크립트). dotup 은 그 래퍼.
 #   상태 점검은 `dotfiles-doctor` (private 오버레이 미clone/미apply/uncommitted 를 경고).
-dotup() {
-  local priv="$HOME/.local/share/chezmoi-private"
-  echo "» public dotfiles";  chezmoi update --apply || return 1
-  if [ ! -d "$priv/.git" ]; then
-    echo "» cloning private overlay"
-    git clone git@github.com:yeongbin-jo/dotfiles-private.git "$priv" || return 1
-  else
-    echo "» private overlay";  git -C "$priv" pull --ff-only || return 1
-  fi
-  chezmoi -S "$priv" apply || return 1
-  echo "✓ dotfiles up to date (public + private)"
-}
+dotup() { "$HOME/.local/bin/dotfiles-sync" "$@"; }
 
 # ── 머신별/민감 설정 (장비 alias 등, age 암호화) ──
 [ -f "$HOME/.zshrc.local" ] && source "$HOME/.zshrc.local"
