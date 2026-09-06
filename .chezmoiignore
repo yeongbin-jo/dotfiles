@@ -26,9 +26,6 @@ macos.sh
 tests
 tests/**
 
-# ── m4-air 전용: 개인 tailnet 진입 터널 (b5-bridge LaunchAgent, sshuttle 데몬/설치기) ──
-{{- if ne .machine "m4-air" }}
-Library/LaunchAgents/com.yb.b5-bridge.plist
-.config/b5-sshuttle
-.local/bin/b5-sshuttle-install
-{{- end }}
+# git hooks dir — deployed to the source repo config only, never to $HOME
+.githooks
+.githooks/**

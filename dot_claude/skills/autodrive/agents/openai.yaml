@@ -1,4 +1,0 @@
-interface:
-  display_name: "Autodrive"
-  short_description: "Autonomous CrossCheck SDLC driver"
-  default_prompt: "Use $autodrive to assess and drive one CrossCheck issue end to end with the required gates."

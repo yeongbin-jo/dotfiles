@@ -2,3 +2,6 @@
 .zshrc.local
 key.txt
 *.key
+
+# python tooling cache
+.ruff_cache/

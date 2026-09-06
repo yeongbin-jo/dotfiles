@@ -1,0 +1,9 @@
+#!/bin/sh
+# public dotfiles 소스 레포에 누출 가드 훅(.githooks/pre-commit) 연결
+# hook hash: {{ include ".githooks/pre-commit" | sha256sum }}
+set -e
+SRC="{{ .chezmoi.sourceDir }}"
+if [ -d "$SRC/.git" ] && [ -f "$SRC/.githooks/pre-commit" ]; then
+  git -C "$SRC" config core.hooksPath .githooks
+  echo "[git-hooks] core.hooksPath=.githooks ($SRC)"
+fi

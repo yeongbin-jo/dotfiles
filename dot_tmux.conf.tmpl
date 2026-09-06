@@ -132,7 +132,7 @@ set -g @plugin 'tmux-plugins/tmux-resurrect'
 set -g @plugin 'tmux-plugins/tmux-continuum'
 
 # 복원 시 다시 띄울 프로그램 화이트리스트 (모니터링 도구들 + 로그 뷰어).
-#  🚨 운영 프로세스(봇·서버)는 여기 넣지 않는다 — 감독은 launchd 몫이다(m4-mini: ~/naokr/launchd.sh).
+#  🚨 운영 프로세스(봇·서버)는 여기 넣지 않는다 — 감독은 launchd 몫이다.
 #     resurrect 는 마지막 저장본을 서버 시작 때 한 번 재생할 뿐 크래시 재기동을 못 하고, 부팅 자동기동은
 #     자동로그인→Terminal.app→LaunchAgent→tmux→continuum→resurrect 여섯 고리에 매달린다(2026-09-06 launchd 로 이관).
 set -g @resurrect-processes 'btop htop ctop glances tail "~lazydocker"'

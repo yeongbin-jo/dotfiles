@@ -28,6 +28,19 @@ find_cmd() {
 echo "dotfiles doctor"
 echo
 
+# ── private overlay ──
+PRIV="${DOTFILES_PRIVATE:-$HOME/.local/share/chezmoi-private}"
+if [ -d "$PRIV/.git" ]; then
+  if have chezmoi && chezmoi -S "$PRIV" verify >/dev/null 2>&1; then
+    ok "private overlay applied and in sync ($PRIV)"
+  else
+    warn "private overlay present but targets differ — run dotfiles-sync"
+  fi
+  [ -r "$HOME/.config/dotfiles/public-denylist" ] && ok "public-denylist present (leak guard armed)" || warn "public-denylist missing — leak guard runs generic patterns only"
+else
+  warn "private overlay not cloned: git clone git@github.com:yeongbin-jo/dotfiles-private.git $PRIV"
+fi
+
 chezmoi_bin="$(find_cmd chezmoi 2>/dev/null || true)"
 if [ -n "$chezmoi_bin" ]; then
   ok "chezmoi is installed"

@@ -13,18 +13,14 @@ secrets with [age](https://age-encryption.org) encryption.
 | `dot_gitconfig.tmpl` | `~/.gitconfig` | delta pager, guarded by `lookPath` |
 | `dot_config/ghostty/config` | `~/.config/ghostty/config` | Ghostty terminal |
 | `dot_config/private_karabiner` | `~/.config/karabiner` | Karabiner profile and complex modifications |
-| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `remote-work-status`, `lock-screen`, `obsidian-vault`) |
+| `dot_local/bin` | `~/.local/bin` | operational helpers (`dotfiles-doctor`, `dotfiles-sync`, `remote-work-status`, `lock-screen`, `obsidian-vault`) |
 | `dot_tmux.conf` · `dot_vimrc` · `dot_screenrc` | `~/.tmux.conf` … | editor and terminal session config |
-| `dot_claude/encrypted_CLAUDE.md.tmpl.age` | `~/.claude/CLAUDE.md` | **network topology for agents** — per-machine reachability rules; branches on `machine`; **age-encrypted** |
-| `dot_codex/symlink_AGENTS.md.tmpl` | `~/.codex/AGENTS.md` | symlink to `~/.claude/CLAUDE.md` so Codex reads the same topology |
-| `private_Library/private_LaunchAgents/encrypted_com.yb.b5-bridge.plist.age` | `~/Library/LaunchAgents/…` | workstation only: SOCKS + port forwards through a bridge host into the personal tailnet — **age-encrypted** |
-| `dot_config/b5-sshuttle` · `dot_local/bin/…b5-sshuttle-install` | `~/.config/b5-sshuttle`, `~/.local/bin/b5-sshuttle-install` | workstation only: root LaunchDaemon (sshuttle) + `/etc/hosts` names for transparent access to the personal tailnet — **age-encrypted**. Run once: `sudo ~/.local/bin/b5-sshuttle-install` |
 
 `iterm2.json` and `macos.sh` are kept for reference and **not** deployed (`.chezmoiignore`d).
 
 ## Templating highlights
 
-- Per-machine branches via a `machine` data var (`m4-air` / `m2-air`).
+- Per-machine branches via a `machine` data var.
 - Runtime managers load only when present (`stat ~/.nvm`, `stat ~/.pyenv`) — fresh
   machines never error on a missing tool.
 - Tool-specific config guarded by `lookPath` (e.g. git's `delta`).
@@ -36,11 +32,27 @@ secrets with [age](https://age-encryption.org) encryption.
 brew install chezmoi age
 # restore the age key to ~/.config/chezmoi/key.txt (from your password manager)
 chezmoi init --apply yeongbin-jo
+git clone git@github.com:yeongbin-jo/dotfiles-private.git ~/.local/share/chezmoi-private   # private overlay
+dotfiles-sync
 brew bundle --file=~/.local/share/chezmoi/Brewfile
 dotfiles-doctor
 ```
 
 > chezmoi never runs `brew` on its own — package installs are always an explicit step.
+
+## Public vs. private overlay
+
+This public repo holds only generic, machine-agnostic config. Everything that
+describes *my* machines — hostnames, IPs, tailnets, SSH config, tunnels,
+company/project-specific skills — lives in a separate **private overlay** repo
+applied on top (`chezmoi -S ~/.local/share/chezmoi-private apply`). Use
+`dotfiles-sync` to update and apply both in the right order; a target path is
+owned by exactly one of the two repos.
+
+A pre-commit hook (`.githooks/pre-commit`, wired by chezmoi via
+`core.hooksPath`) blocks commits to this repo that contain IPs, tailnet DNS
+names (Tailscale MagicDNS), key/token signatures, or any pattern listed in
+`~/.config/dotfiles/public-denylist` (deployed by the private overlay).
 
 ## Manual Gates
 
