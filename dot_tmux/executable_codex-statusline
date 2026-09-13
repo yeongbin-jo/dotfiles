@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import math
@@ -515,7 +516,31 @@ def latest_claude_cache_state(cwd: str | None) -> dict | None:
     return None
 
 
-def render_line(product: str, state: dict, context_used: int, columns: int = 0) -> str:
+def codex_account_label(codex_home: Path) -> str:
+    """The local part of the signed-in account, for telling two homes apart.
+
+    codex stores one account per CODEX_HOME, and the email only exists inside
+    the OAuth id_token, so decode that rather than guessing from the directory
+    name. API-key logins carry no id_token and get no label.
+    """
+    try:
+        auth = json.loads((codex_home / "auth.json").read_text())
+    except Exception:
+        return ""
+    token = (auth.get("tokens") or {}).get("id_token") or ""
+    parts = token.split(".")
+    if len(parts) < 2:
+        return ""
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        email = json.loads(base64.urlsafe_b64decode(payload)).get("email") or ""
+    except Exception:
+        return ""
+    return email.split("@", 1)[0]
+
+
+def render_line(product: str, state: dict, context_used: int, columns: int = 0,
+                account: str = "") -> str:
     remaining = int(state["remaining_percent"])
     resets_at = int(state["resets_at"])
     seconds = resets_at - int(time.time())
@@ -527,8 +552,10 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0) 
 
     product_color = "#e6c384" if product == "CLAUDE" else "#727169"
     product_label = f" {product}  " if product == "CODEX" else f" {product} "
+    account_label = tmux_style("fg=#7aa89f", f"{account} ") if account else ""
     left = (
         tmux_style(f"fg={product_color},bold", product_label)
+        + account_label
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
         + percent_bar(
             context_used,
@@ -642,7 +669,8 @@ def print_status() -> int:
         start_background_refresh()
 
     if "remaining_percent" in state and "resets_at" in state:
-        print(render_line("CODEX", state, context_used, columns))
+        print(render_line("CODEX", state, context_used, columns,
+                          codex_account_label(STATE_DB.parent)))
     elif state.get("line"):
         print(state["line"])
     else:
