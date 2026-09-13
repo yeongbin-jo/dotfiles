@@ -108,6 +108,15 @@ alias scrcpy='scrcpy --stay-awake'
 alias lock='lock-screen'                                              # 즉시 비번 잠금(작업은 계속 실행)
 alias claude-yolo='claude --dangerously-skip-permissions'
 alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
+# ── 두 번째 codex 계정 ──
+#    codex 에는 계정 전환 기능이 없다. 인증은 CODEX_HOME 하나에 auth.json 한
+#    벌뿐이라, 홈을 갈라야 계정이 갈린다(커뮤니티의 codex-profiles/aisw 등도
+#    전부 같은 방식). 바이너리와 스킬은 심링크로 공유하고 인증·세션·plugins·
+#    connectors 만 분리한다 — 공유하면 한쪽 커넥터 설정이 다른 쪽에 샌다.
+#    설정은 심링크가 아니라 사본이다: codex 가 원자적 교체로 쓰면 심링크가
+#    실제 파일로 바뀌어 조용히 공유가 끊긴다.
+alias codex2='CODEX_HOME=$HOME/.codex-eng codex'
+alias codex-yolo2='CODEX_HOME=$HOME/.codex-eng codex --dangerously-bypass-approvals-and-sandbox'
 alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
 {{- if eq .machine "m2-air" }}
 alias run=./run
