@@ -260,24 +260,17 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
     return False
 
 
-def codex_home_for_pane(pane_pid: int | None) -> Path:
-    """Resolve the CODEX_HOME of the agent actually running in this pane.
-
-    A tmux `#()` job inherits the tmux server's environment, not the pane's, so
-    CODEX_HOME is simply absent here and every pane would read the default
-    home's database. With two accounts that silently shows the wrong account's
-    usage. Read the variable off the pane's own process tree instead.
-    """
+def codex_pid_for_pane(pane_pid: int | None) -> int | None:
+    """The pid of the codex process actually running in this pane."""
     if not pane_pid:
-        return DEFAULT_CODEX_HOME
+        return None
     try:
         listing = subprocess.run(
             ["ps", "-axo", "pid=,ppid=,command="],
             capture_output=True, text=True, timeout=0.2, check=False,
         ).stdout
     except Exception:
-        return DEFAULT_CODEX_HOME
-
+        return None
     children: dict[int, list[tuple[int, str]]] = {}
     for line in listing.splitlines():
         parts = line.strip().split(None, 2)
@@ -288,7 +281,6 @@ def codex_home_for_pane(pane_pid: int | None) -> Path:
         except ValueError:
             continue
         children.setdefault(parent_pid, []).append((child_pid, parts[2]))
-
     pending, seen = [pane_pid], set()
     while pending:
         current = pending.pop()
@@ -297,18 +289,62 @@ def codex_home_for_pane(pane_pid: int | None) -> Path:
         seen.add(current)
         for child_pid, command in children.get(current, []):
             if "codex" in command:
-                try:
-                    env = subprocess.run(
-                        ["ps", "-Ewww", "-p", str(child_pid)],
-                        capture_output=True, text=True, timeout=0.2, check=False,
-                    ).stdout
-                except Exception:
-                    return DEFAULT_CODEX_HOME
-                for token in env.split():
-                    if token.startswith("CODEX_HOME="):
-                        return Path(token.split("=", 1)[1])
-                return DEFAULT_CODEX_HOME
+                return child_pid
             pending.append(child_pid)
+    return None
+
+
+def rollout_for_pid(codex_pid: int | None) -> str | None:
+    """The rollout this pane's codex has open.
+
+    Every session in a worktree records the same `cwd` (they all run commands
+    with `git -C` from the main checkout), so selecting a thread by cwd makes
+    each pane show whichever session was most recently active — usually another
+    pane's. The open file descriptor is the only per-pane fact available.
+    """
+    if not codex_pid:
+        return None
+    try:
+        listing = subprocess.run(
+            ["lsof", "-p", str(codex_pid), "-Fn"],
+            capture_output=True, text=True, timeout=0.4, check=False,
+        ).stdout
+    except Exception:
+        return None
+    newest, newest_mtime = None, -1.0
+    for line in listing.splitlines():
+        if not line.startswith("n") or "rollout-" not in line or not line.endswith(".jsonl"):
+            continue
+        candidate = Path(line[1:])
+        try:
+            mtime = candidate.stat().st_mtime
+        except OSError:
+            continue
+        if mtime > newest_mtime:
+            newest, newest_mtime = str(candidate), mtime
+    return newest
+
+
+def codex_home_for_pane(pane_pid: int | None) -> Path:
+    """Resolve the CODEX_HOME of the agent running in this pane.
+
+    A tmux `#()` job inherits the tmux server's environment, not the pane's, so
+    CODEX_HOME is absent here and every pane would read the default home's
+    database. With two accounts that silently shows the wrong account.
+    """
+    codex_pid = codex_pid_for_pane(pane_pid)
+    if not codex_pid:
+        return DEFAULT_CODEX_HOME
+    try:
+        env = subprocess.run(
+            ["ps", "-Ewww", "-p", str(codex_pid)],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout
+    except Exception:
+        return DEFAULT_CODEX_HOME
+    for token in env.split():
+        if token.startswith("CODEX_HOME="):
+            return Path(token.split("=", 1)[1])
     return DEFAULT_CODEX_HOME
 
 
@@ -409,8 +445,31 @@ def context_used_percent(tokens_in_context: int, context_window: int) -> int:
     return int(math.floor((used / context_window) * 100.0 + 0.5))
 
 
-def latest_context_state(cwd: str | None) -> dict | None:
-    rollout = latest_rollout_path(cwd)
+def session_baseline_tokens(rollout: Path) -> int:
+    """Tokens already in context at the session's first turn."""
+    try:
+        with rollout.open("rb") as handle:
+            head = handle.read(CONTEXT_TAIL_BYTES)
+    except OSError:
+        return 0
+    for raw_line in head.split(b"\n"):
+        try:
+            event = json.loads(raw_line)
+        except Exception:
+            continue
+        if event.get("type") != "event_msg":
+            continue
+        payload = event.get("payload") or {}
+        if payload.get("type") != "token_count":
+            continue
+        usage = (payload.get("info") or {}).get("last_token_usage") or {}
+        tokens = usage.get("total_tokens")
+        return tokens if isinstance(tokens, int) else 0
+    return 0
+
+
+def latest_context_state(cwd: str | None, rollout: str | None = None) -> dict | None:
+    rollout = rollout or latest_rollout_path(cwd)
     if not rollout:
         return None
 
@@ -431,6 +490,16 @@ def latest_context_state(cwd: str | None) -> dict | None:
         total_tokens = last.get("total_tokens")
         if not isinstance(context_window, int) or not isinstance(total_tokens, int):
             return None
+
+        # codex's own footer does not count the session's opening prompt (system
+        # instructions plus tool definitions), so a fresh session reads "100%
+        # left" while the raw number is already tens of thousands of tokens.
+        # Subtract that floor from both sides to match the pane itself; the
+        # first token_count in the file is that floor.
+        baseline = session_baseline_tokens(Path(rollout))
+        if 0 < baseline < total_tokens < context_window:
+            total_tokens -= baseline
+            context_window -= baseline
 
         return {
             "used_percent": context_used_percent(total_tokens, context_window),
@@ -552,15 +621,14 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0,
 
     product_color = "#e6c384" if product == "CLAUDE" else "#727169"
     product_label = f" {product}  " if product == "CODEX" else f" {product} "
-    account_label = tmux_style("fg=#7aa89f", f"{account} ") if account else ""
     left = (
         tmux_style(f"fg={product_color},bold", product_label)
-        + account_label
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
         + percent_bar(
             context_used,
             context_bar_color(context_used),
         )
+        + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
     )
     right = (
         tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
@@ -662,7 +730,7 @@ def print_status() -> int:
     STATE_DB = codex_home_for_pane(pane_pid) / "state_5.sqlite"
 
     logical_cwd = args[4] if len(args) >= 5 and args[4] else cwd
-    context = latest_context_state(logical_cwd)
+    context = latest_context_state(logical_cwd, rollout_for_pid(codex_pid_for_pane(pane_pid)))
     context_used = int(context["used_percent"]) if context else 0
 
     if now - fetched_at > CACHE_TTL_SECONDS:
