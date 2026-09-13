@@ -82,8 +82,17 @@ set -g status-left '#[fg=#7e9cd8,bold] #S #[default]'
 
 # ── 창 목록 (현재=블루 볼드, 비활성=디밍 그레이 / 줌=Z) ──
 setw -g window-status-separator ""
-setw -g window-status-format         '#[fg=#727169] #I #W '
-setw -g window-status-current-format '#[fg=#7e9cd8,bold] #I #W#{?window_zoomed_flag, Z,} #[default]'
+#    탭 앞 마커는 nydus-monitor 가 창 옵션 @nydus_state 에 적은 상태를 tmux 가
+#    그린다. 이름에는 북극성만 들어간다 — 상태는 주기마다 바뀌고 이름은 몇
+#    시간에 한 번 바뀌므로, 둘을 한 문자열에 묶으면 빠른 쪽이 느린 쪽에 끌려가
+#    멈춰 버린다(실제로 그랬다).
+#    running 은 회전한다. tmux 는 status-interval(1초)마다 상태줄을 다시 그리고,
+#    프레임은 그 창의 #{window_activity} 초 끝자리(0-9)에서 뽑는다. 활동 시각은
+#    그 창이 출력을 낼 때만 갱신되므로 일하는 창은 돌고 멈춘 창은 선다.
+#    서브셸 0개이고, 탭 안에서 도는 프로그램(codex 등)에 아무것도 의존하지 않는다.
+#    @nydus_state 가 없는 창은 마커 없이 순정으로 그려진다.
+setw -g window-status-format         '#[fg=#727169] #I #{?#{==:#{@nydus_state},running},#{?#{==:#{=-1:#{t/f/%S:window_activity}},0},⠋,#{?#{==:#{=-1:#{t/f/%S:window_activity}},1},⠙,#{?#{==:#{=-1:#{t/f/%S:window_activity}},2},⠹,#{?#{==:#{=-1:#{t/f/%S:window_activity}},3},⠸,#{?#{==:#{=-1:#{t/f/%S:window_activity}},4},⠼,#{?#{==:#{=-1:#{t/f/%S:window_activity}},5},⠴,#{?#{==:#{=-1:#{t/f/%S:window_activity}},6},⠦,#{?#{==:#{=-1:#{t/f/%S:window_activity}},7},⠧,#{?#{==:#{=-1:#{t/f/%S:window_activity}},8},⠇,⠏}}}}}}}}} ,#{?#{==:#{@nydus_state},blocked},🔴 ,#{?#{==:#{@nydus_state},awaiting},🟡 ,#{?#{==:#{@nydus_state},done},✅ ,#{?#{==:#{@nydus_state},idle},⚪ ,}}}}}#W '
+setw -g window-status-current-format '#[fg=#7e9cd8,bold] #I #{?#{==:#{@nydus_state},running},#{?#{==:#{=-1:#{t/f/%S:window_activity}},0},⠋,#{?#{==:#{=-1:#{t/f/%S:window_activity}},1},⠙,#{?#{==:#{=-1:#{t/f/%S:window_activity}},2},⠹,#{?#{==:#{=-1:#{t/f/%S:window_activity}},3},⠸,#{?#{==:#{=-1:#{t/f/%S:window_activity}},4},⠼,#{?#{==:#{=-1:#{t/f/%S:window_activity}},5},⠴,#{?#{==:#{=-1:#{t/f/%S:window_activity}},6},⠦,#{?#{==:#{=-1:#{t/f/%S:window_activity}},7},⠧,#{?#{==:#{=-1:#{t/f/%S:window_activity}},8},⠇,⠏}}}}}}}}} ,#{?#{==:#{@nydus_state},blocked},🔴 ,#{?#{==:#{@nydus_state},awaiting},🟡 ,#{?#{==:#{@nydus_state},done},✅ ,#{?#{==:#{@nydus_state},idle},⚪ ,}}}}}#W#{?window_zoomed_flag, Z,} #[default]'
 
 # ── 오른쪽: SYNC경고 · CPU(load) · MEM(used%) · [BAT|DKR] · host · 시계 ──
 #    SYNC: synchronize-panes(모든 패널 동시입력) 켜졌을 때만 빨갛게 (사고 방지)
