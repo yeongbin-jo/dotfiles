@@ -1,2 +1,6 @@
 # 폐기된 헬퍼 — apply 시 모든 기기에서 제거된다
 .local/bin/lock-for-remote
+
+# codex 자가 탭 제목 훅 폐기 (2026-09-13) — 탭 제목은 nydus-monitor/`tab-title` 만
+.codex/hooks.json
+.local/bin/codex-tab-title-hook

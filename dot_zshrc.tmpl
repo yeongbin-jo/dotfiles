@@ -157,21 +157,14 @@ autoload -Uz add-zsh-hook
 add-zsh-hook precmd _clear_stale_codex_tmux_workdir
 add-zsh-hook chpwd _clear_stale_codex_tmux_workdir
 
-# ── tmux 창 이름 stale 방지: 프롬프트로 돌아오면 pane_title 을 기본값(호스트명)으로 ──
-#    창 이름은 tmux.conf 가 #{pane_title} 로 계산한다(= 에이전트가 OSC 2 로 써 넣는
-#    작업 요약). 그 값은 프로세스가 끝나도 남고, oh-my-zsh 는 tmux TERM 에서 `ESC k`
-#    만 쏘므로(allow-rename off = 무시) 아무도 안 지운다 → 에이전트가 죽으면 탭이
-#    마지막 요약에 얼어붙는다. 프롬프트마다 호스트명으로 되돌려 tmux 순정 규칙
-#    (#{pane_current_command}) 으로 복귀시킨다.
+# ── tmux 창 이름 stale 방지: 프롬프트로 돌아왔으면 그 작업은 끝났다 ──
+#    창 이름은 tmux.conf 의 automatic-rename-format 이 계산하고, 유일한 예외가
+#    pane 옵션 @agent_title 이다(`tab-title` 이 쓴다). 프로세스가 죽어도 그 옵션은
+#    남으므로 프롬프트마다 해제해 tmux 순정 규칙(#{pane_current_command})으로 되돌린다.
 _reset_tmux_pane_title() {
-  [ -n "${TMUX:-}" ] || return 0
-  print -n "\e]2;${HOST%%.*}\a"
-  # 에이전트가 명시적으로 건 제목(@agent_title)도 함께 해제 — 셸로 돌아왔으면
-  # 그 작업은 끝났다. codex 는 SessionEnd 훅이 지우지만 강제종료엔 안 돈다.
-  if [ -n "${TMUX_PANE:-}" ]; then
-    tmux set-option -p -t "$TMUX_PANE" -u @agent_title 2>/dev/null
-    tmux set-window-option -t "$TMUX_PANE" automatic-rename on 2>/dev/null
-  fi
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 0
+  tmux set-option -p -t "$TMUX_PANE" -u @agent_title 2>/dev/null
+  tmux set-window-option -t "$TMUX_PANE" automatic-rename on 2>/dev/null
 }
 add-zsh-hook precmd _reset_tmux_pane_title
 
