@@ -18,7 +18,8 @@ from pathlib import Path
 CACHE_TTL_SECONDS = 90
 FETCH_TIMEOUT_SECONDS = 14
 CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
-STATE_DB = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "state_5.sqlite"
+DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+STATE_DB = DEFAULT_CODEX_HOME / "state_5.sqlite"
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
 
@@ -256,6 +257,58 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
                 return True
             pending.append(child_pid)
     return False
+
+
+def codex_home_for_pane(pane_pid: int | None) -> Path:
+    """Resolve the CODEX_HOME of the agent actually running in this pane.
+
+    A tmux `#()` job inherits the tmux server's environment, not the pane's, so
+    CODEX_HOME is simply absent here and every pane would read the default
+    home's database. With two accounts that silently shows the wrong account's
+    usage. Read the variable off the pane's own process tree instead.
+    """
+    if not pane_pid:
+        return DEFAULT_CODEX_HOME
+    try:
+        listing = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,command="],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout
+    except Exception:
+        return DEFAULT_CODEX_HOME
+
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in listing.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            child_pid, parent_pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append((child_pid, parts[2]))
+
+    pending, seen = [pane_pid], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for child_pid, command in children.get(current, []):
+            if "codex" in command:
+                try:
+                    env = subprocess.run(
+                        ["ps", "-Ewww", "-p", str(child_pid)],
+                        capture_output=True, text=True, timeout=0.2, check=False,
+                    ).stdout
+                except Exception:
+                    return DEFAULT_CODEX_HOME
+                for token in env.split():
+                    if token.startswith("CODEX_HOME="):
+                        return Path(token.split("=", 1)[1])
+                return DEFAULT_CODEX_HOME
+            pending.append(child_pid)
+    return DEFAULT_CODEX_HOME
 
 
 def is_claude_command(command: str | None, pane_pid: int | None = None) -> bool:
@@ -577,6 +630,9 @@ def print_status() -> int:
     if is_claude_command(command, pane_pid):
         print(render_claude_line(cwd, columns))
         return 0
+
+    global STATE_DB
+    STATE_DB = codex_home_for_pane(pane_pid) / "state_5.sqlite"
 
     logical_cwd = args[4] if len(args) >= 5 and args[4] else cwd
     context = latest_context_state(logical_cwd)
