@@ -31,33 +31,48 @@ def cache_dir() -> Path:
     return path
 
 
-CACHE_FILE = cache_dir() / "state.json"
-LOCK_FILE = cache_dir() / "refresh.lock"
+# Weekly limits belong to an account, and codex keeps one account per CODEX_HOME.
+# A single shared cache file would let whichever home refreshed last answer for
+# every pane, so both the cache and its lock are keyed by home.
+ACTIVE_CODEX_HOME = DEFAULT_CODEX_HOME
+
+
+def home_slug(home: Path) -> str:
+    return hashlib.sha1(str(home.resolve()).encode()).hexdigest()[:12]
+
+
+def cache_file() -> Path:
+    return cache_dir() / f"state-{home_slug(ACTIVE_CODEX_HOME)}.json"
+
+
+def lock_file() -> Path:
+    return cache_dir() / f"refresh-{home_slug(ACTIVE_CODEX_HOME)}.lock"
 
 
 def read_cache() -> dict:
     try:
-        return json.loads(CACHE_FILE.read_text())
+        return json.loads(cache_file().read_text())
     except Exception:
         return {}
 
 
 def write_cache(state: dict) -> None:
-    tmp = CACHE_FILE.with_suffix(".tmp")
+    target = cache_file()
+    tmp = target.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, CACHE_FILE)
+    os.replace(tmp, target)
 
 
 def acquire_lock() -> bool:
     try:
-        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(str(lock_file()), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w") as f:
             f.write(str(os.getpid()))
         return True
     except FileExistsError:
         try:
-            if time.time() - LOCK_FILE.stat().st_mtime > FETCH_TIMEOUT_SECONDS * 2:
-                LOCK_FILE.unlink()
+            if time.time() - lock_file().stat().st_mtime > FETCH_TIMEOUT_SECONDS * 2:
+                lock_file().unlink()
                 return acquire_lock()
         except OSError:
             pass
@@ -66,16 +81,46 @@ def acquire_lock() -> bool:
 
 def release_lock() -> None:
     try:
-        LOCK_FILE.unlink()
+        lock_file().unlink()
     except FileNotFoundError:
         pass
 
 
+def system_tool(name: str, *candidates: str) -> str:
+    """Absolute path to a system tool.
+
+    A tmux `#()` job inherits the PATH the tmux server started with. When that
+    PATH is missing /bin the lookup raises, the caller swallows it, and every
+    pane silently falls back to the default account — the wrong answer rather
+    than a visible error. Name the locations instead.
+    """
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which(name) or name
+
+
+PS = system_tool("ps", "/bin/ps", "/usr/bin/ps")
+LSOF = system_tool("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
+
+
 def codex_binary() -> str:
-    return shutil.which("codex") or "/opt/homebrew/bin/codex"
+    # A tmux `#()` job inherits the tmux server's PATH, which was captured when
+    # the server started and need not contain the install dir, so name the known
+    # locations rather than trusting the lookup alone.
+    found = shutil.which("codex")
+    if found:
+        return found
+    for candidate in (Path.home() / ".local/bin/codex", Path("/opt/homebrew/bin/codex")):
+        if candidate.exists():
+            return str(candidate)
+    return "codex"
 
 
 def app_server_request() -> dict:
+    # The status job inherits the tmux server environment, not the pane's, so the
+    # home has to be named explicitly or every pane reports the default account.
+    env = dict(os.environ, CODEX_HOME=str(ACTIVE_CODEX_HOME))
     proc = subprocess.Popen(
         [codex_binary(), "app-server", "--stdio"],
         stdin=subprocess.PIPE,
@@ -83,6 +128,7 @@ def app_server_request() -> dict:
         stderr=subprocess.DEVNULL,
         text=True,
         bufsize=1,
+        env=env,
     )
 
     messages = [
@@ -223,7 +269,7 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
         return False
     try:
         output = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,command="],
+            [PS, "-axo", "pid=,ppid=,command="],
             capture_output=True,
             text=True,
             timeout=0.2,
@@ -266,7 +312,7 @@ def codex_pid_for_pane(pane_pid: int | None) -> int | None:
         return None
     try:
         listing = subprocess.run(
-            ["ps", "-axo", "pid=,ppid=,command="],
+            [PS, "-axo", "pid=,ppid=,command="],
             capture_output=True, text=True, timeout=0.2, check=False,
         ).stdout
     except Exception:
@@ -306,7 +352,7 @@ def rollout_for_pid(codex_pid: int | None) -> str | None:
         return None
     try:
         listing = subprocess.run(
-            ["lsof", "-p", str(codex_pid), "-Fn"],
+            [LSOF, "-p", str(codex_pid), "-Fn"],
             capture_output=True, text=True, timeout=0.4, check=False,
         ).stdout
     except Exception:
@@ -337,7 +383,7 @@ def codex_home_for_pane(pane_pid: int | None) -> Path:
         return DEFAULT_CODEX_HOME
     try:
         env = subprocess.run(
-            ["ps", "-Ewww", "-p", str(codex_pid)],
+            [PS, "-Ewww", "-p", str(codex_pid)],
             capture_output=True, text=True, timeout=0.2, check=False,
         ).stdout
     except Exception:
@@ -687,7 +733,8 @@ def start_background_refresh() -> None:
         return
     try:
         subprocess.Popen(
-            [sys.executable, __file__, "--refresh", "--lock-held"],
+            [sys.executable, __file__, "--refresh", "--lock-held",
+             "--codex-home", str(ACTIVE_CODEX_HOME)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -697,9 +744,7 @@ def start_background_refresh() -> None:
 
 
 def print_status() -> int:
-    state = read_cache()
     now = int(time.time())
-    fetched_at = int(state.get("fetched_at") or 0)
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     columns = 0
     command = None
@@ -726,8 +771,13 @@ def print_status() -> int:
         print(render_claude_line(cwd, columns))
         return 0
 
-    global STATE_DB
-    STATE_DB = codex_home_for_pane(pane_pid) / "state_5.sqlite"
+    # The cache is keyed by home, so it can only be read once the pane's account
+    # is known.
+    global STATE_DB, ACTIVE_CODEX_HOME
+    ACTIVE_CODEX_HOME = codex_home_for_pane(pane_pid)
+    STATE_DB = ACTIVE_CODEX_HOME / "state_5.sqlite"
+    state = read_cache()
+    fetched_at = int(state.get("fetched_at") or 0)
 
     logical_cwd = args[4] if len(args) >= 5 and args[4] else cwd
     context = latest_context_state(logical_cwd, rollout_for_pid(codex_pid_for_pane(pane_pid)))
@@ -747,6 +797,9 @@ def print_status() -> int:
 
 
 def main() -> int:
+    global ACTIVE_CODEX_HOME
+    if "--codex-home" in sys.argv:
+        ACTIVE_CODEX_HOME = Path(sys.argv[sys.argv.index("--codex-home") + 1])
     if "--refresh" in sys.argv:
         return refresh(lock_held="--lock-held" in sys.argv)
     return print_status()
