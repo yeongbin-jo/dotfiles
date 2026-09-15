@@ -671,7 +671,9 @@ def latest_claude_state(cwd: str | None) -> dict | None:
 
 
 def claude_cache_key(cwd: str) -> str:
-    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(
+        (str(ACTIVE_CLAUDE_CONFIG_DIR) + "\0" + cwd).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def latest_claude_cache_state(cwd: str | None) -> dict | None:
@@ -679,7 +681,7 @@ def latest_claude_cache_state(cwd: str | None) -> dict | None:
     paths = []
     if cwd:
         paths.append(cache_root / f"{claude_cache_key(cwd)}.json")
-    paths.append(cache_root / "latest.json")
+    paths.append(cache_root / f"latest-{home_slug(ACTIVE_CLAUDE_CONFIG_DIR)}.json")
 
     for path in paths:
         try:

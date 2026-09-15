@@ -21,8 +21,22 @@ def clamp_percent(value) -> int:
         return 0
 
 
+# Claude Code keeps one account per CLAUDE_CONFIG_DIR. Keying the cache by cwd
+# alone lets two accounts in the same directory overwrite each other, so the
+# status line shows whichever wrote last — the wrong account's numbers rather
+# than none. Key by config dir too, the way the codex side keys by CODEX_HOME.
+def config_dir() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude"))
+
+
+def home_slug() -> str:
+    return hashlib.sha1(str(config_dir()).encode("utf-8")).hexdigest()[:12]
+
+
 def cache_key(cwd: str) -> str:
-    return hashlib.sha256(cwd.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(
+        (str(config_dir()) + "\0" + cwd).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 try:
@@ -56,7 +70,8 @@ state = {
 }
 
 payload = json.dumps(state, separators=(",", ":"))
-for path in (cache_dir() / f"{cache_key(cwd)}.json", cache_dir() / "latest.json"):
+for path in (cache_dir() / f"{cache_key(cwd)}.json",
+             cache_dir() / f"latest-{home_slug()}.json"):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(payload)
     os.replace(tmp, path)
