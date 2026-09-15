@@ -117,6 +117,16 @@ alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
 #    실제 파일로 바뀌어 조용히 공유가 끊긴다.
 alias codex2='CODEX_HOME=$HOME/.codex-eng codex'
 alias codex-yolo2='CODEX_HOME=$HOME/.codex-eng codex --dangerously-bypass-approvals-and-sandbox'
+# ── 두 번째 claude 계정 ──
+#    같은 구조다. claude 도 계정 전환 기능이 없고 로그인 상태가
+#    CLAUDE_CONFIG_DIR 에 묶인다(빈 dir 로 `claude auth status` 하면
+#    loggedIn=false — 토큰이 Keychain 에 있어도 config dir 이 인증을 가른다).
+#    이 값은 셸에서 줘야 하고 실행 중에는 못 바꾼다.
+#    홈 이름이 -eng 가 아닌 이유: claude 두 계정은 codex 와 달리 localpart 로
+#    개인/회사가 갈리지 않는다. 그래서 회사 도메인 기준으로 vb 를 쓴다.
+#    구성은 ~/.local/share/chezmoi-private 의 setup-claude-second-account 가 만든다.
+alias claude2='CLAUDE_CONFIG_DIR=$HOME/.claude-vb claude'
+alias claude-yolo2='CLAUDE_CONFIG_DIR=$HOME/.claude-vb claude --dangerously-skip-permissions'
 alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
 {{- if eq .machine "m2-air" }}
 alias run=./run

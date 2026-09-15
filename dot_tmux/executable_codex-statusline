@@ -21,7 +21,15 @@ FETCH_TIMEOUT_SECONDS = 14
 CONTEXT_TAIL_BYTES = 8 * 1024 * 1024
 DEFAULT_CODEX_HOME = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
 STATE_DB = DEFAULT_CODEX_HOME / "state_5.sqlite"
-CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+DEFAULT_CLAUDE_CONFIG_DIR = Path(
+    os.environ.get("CLAUDE_CONFIG_DIR") or str(Path.home() / ".claude")
+)
+
+# Claude Code keeps one account per CLAUDE_CONFIG_DIR, the same way codex keeps
+# one per CODEX_HOME. Transcripts, context and the account label all live under
+# the pane's own config dir, so reading the default home would answer for the
+# wrong account.
+ACTIVE_CLAUDE_CONFIG_DIR = DEFAULT_CLAUDE_CONFIG_DIR
 
 
 def cache_dir() -> Path:
@@ -308,6 +316,16 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
 
 def codex_pid_for_pane(pane_pid: int | None) -> int | None:
     """The pid of the codex process actually running in this pane."""
+    return agent_pid_for_pane(pane_pid, "codex")
+
+
+def claude_pid_for_pane(pane_pid: int | None) -> int | None:
+    """The pid of the claude process actually running in this pane."""
+    return agent_pid_for_pane(pane_pid, "claude")
+
+
+def agent_pid_for_pane(pane_pid: int | None, needle: str) -> int | None:
+    """The pid of the agent process actually running in this pane."""
     if not pane_pid:
         return None
     try:
@@ -334,7 +352,7 @@ def codex_pid_for_pane(pane_pid: int | None) -> int | None:
             continue
         seen.add(current)
         for child_pid, command in children.get(current, []):
-            if "codex" in command:
+            if needle in command:
                 return child_pid
             pending.append(child_pid)
     return None
@@ -392,6 +410,50 @@ def codex_home_for_pane(pane_pid: int | None) -> Path:
         if token.startswith("CODEX_HOME="):
             return Path(token.split("=", 1)[1])
     return DEFAULT_CODEX_HOME
+
+
+def claude_config_dir_for_pane(pane_pid: int | None) -> Path:
+    """Resolve the CLAUDE_CONFIG_DIR of the agent running in this pane.
+
+    Same reason as `codex_home_for_pane`: a tmux `#()` job inherits the tmux
+    server's environment, not the pane's, so without reading the process env
+    every pane would report the default account.
+    """
+    claude_pid = claude_pid_for_pane(pane_pid)
+    if not claude_pid:
+        return DEFAULT_CLAUDE_CONFIG_DIR
+    try:
+        env = subprocess.run(
+            [PS, "-Ewww", "-p", str(claude_pid)],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout
+    except Exception:
+        return DEFAULT_CLAUDE_CONFIG_DIR
+    for token in env.split():
+        if token.startswith("CLAUDE_CONFIG_DIR="):
+            return Path(token.split("=", 1)[1])
+    return DEFAULT_CLAUDE_CONFIG_DIR
+
+
+def claude_account_label(config_dir: Path) -> str:
+    """The local part of the signed-in account, for telling two homes apart.
+
+    The OAuth token itself lives in the macOS Keychain, but Claude Code caches
+    the signed-in identity in `.claude.json`. The default home keeps that file
+    at `$HOME/.claude.json`; a custom CLAUDE_CONFIG_DIR keeps it inside the dir.
+    """
+    candidates = [config_dir / ".claude.json"]
+    if config_dir == Path.home() / ".claude":
+        candidates.append(Path.home() / ".claude.json")
+    for path in candidates:
+        try:
+            account = json.loads(path.read_text()).get("oauthAccount") or {}
+        except Exception:
+            continue
+        email = account.get("emailAddress") or ""
+        if email:
+            return email.split("@", 1)[0]
+    return ""
 
 
 def is_claude_command(command: str | None, pane_pid: int | None = None) -> bool:
@@ -560,7 +622,7 @@ def claude_project_dir(cwd: str | None) -> Path | None:
     if not cwd:
         return None
     sanitized = cwd.replace("/", "-")
-    return CLAUDE_PROJECTS_DIR / sanitized
+    return ACTIVE_CLAUDE_CONFIG_DIR / "projects" / sanitized
 
 
 def latest_claude_state(cwd: str | None) -> dict | None:
@@ -687,7 +749,7 @@ def render_line(product: str, state: dict, context_used: int, columns: int = 0,
     return left + " " * max(2, pad) + right
 
 
-def render_claude_line(cwd: str | None, columns: int = 0) -> str:
+def render_claude_line(cwd: str | None, columns: int = 0, account: str = "") -> str:
     state = latest_claude_state(cwd)
     if not state:
         context_used = 0
@@ -702,12 +764,13 @@ def render_claude_line(cwd: str | None, columns: int = 0) -> str:
             "resets_at": int(resets_at),
             "fetched_at": int(state.get("updated_at") or 0),
         }
-        return render_line("CLAUDE", line_state, context_used, columns)
+        return render_line("CLAUDE", line_state, context_used, columns, account)
 
     return (
         tmux_style("fg=#e6c384,bold", " CLAUDE ")
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
         + percent_bar(context_used, context_bar_color(context_used))
+        + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
     )
 
 
@@ -768,7 +831,12 @@ def print_status() -> int:
         cwd = args[0] if args else None
 
     if is_claude_command(command, pane_pid):
-        print(render_claude_line(cwd, columns))
+        # Transcripts and the account label both live under the pane's own
+        # config dir, so resolve it before reading either.
+        global ACTIVE_CLAUDE_CONFIG_DIR
+        ACTIVE_CLAUDE_CONFIG_DIR = claude_config_dir_for_pane(pane_pid)
+        account = claude_account_label(ACTIVE_CLAUDE_CONFIG_DIR)
+        print(render_claude_line(cwd, columns, account))
         return 0
 
     # The cache is keyed by home, so it can only be read once the pane's account
