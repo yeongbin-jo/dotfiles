@@ -27,3 +27,9 @@ tests/**
 # git hooks dir — deployed to the source repo config only, never to $HOME
 .githooks
 .githooks/**
+
+# ── keepawake=false 인 머신(예: Amphetamine 사용): caffeinate LaunchAgent 배포 안 함 ──
+#    머신별 ~/.config/chezmoi/chezmoi.toml [data] keepawake = false
+{{- if and (hasKey . "keepawake") (not .keepawake) }}
+Library/LaunchAgents/com.yb.keepawake.plist
+{{- end }}
