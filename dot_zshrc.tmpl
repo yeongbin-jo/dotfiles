@@ -127,15 +127,20 @@ alias codex-yolo2='CODEX_HOME=$HOME/.codex-eng codex --dangerously-bypass-approv
 #    예전 이름 ~/.claude-vb 로 이미 로그인해 쓰는 머신은 그 홈을 그대로 쓴다 —
 #    옮기면 로그인과 진행 중인 세션이 끊긴다.
 #    구성은 ~/.local/share/chezmoi-private 의 setup-claude-second-account 가 만든다.
-_claude2_home() {
-  if [ ! -e "$HOME/.claude2" ] && [ -d "$HOME/.claude-vb" ]; then
-    print -r -- "$HOME/.claude-vb"
+# 번호 홈(~/.claude2, ~/.claude3)을 쓰되, 예전 이름 홈(legacy)만 있으면 그걸 쓴다.
+_claude_home() {
+  if [ ! -e "$HOME/.claude$1" ] && [ -d "$HOME/$2" ]; then
+    print -r -- "$HOME/$2"
   else
-    print -r -- "$HOME/.claude2"
+    print -r -- "$HOME/.claude$1"
   fi
 }
-alias claude2='CLAUDE_CONFIG_DIR=$(_claude2_home) claude'
-alias claude-yolo2='CLAUDE_CONFIG_DIR=$(_claude2_home) claude --dangerously-skip-permissions'
+alias claude2='CLAUDE_CONFIG_DIR=$(_claude_home 2 .claude-vb) claude'
+alias claude-yolo2='CLAUDE_CONFIG_DIR=$(_claude_home 2 .claude-vb) claude --dangerously-skip-permissions'
+# ── 세 번째 claude 계정 (계정 3개인 머신만 홈이 만들어진다) ──
+#    같은 규칙. 예전 이름 ~/.claude-eng 로 이미 쓰는 머신은 그 홈을 그대로 쓴다.
+alias claude3='CLAUDE_CONFIG_DIR=$(_claude_home 3 .claude-eng) claude'
+alias claude-yolo3='CLAUDE_CONFIG_DIR=$(_claude_home 3 .claude-eng) claude --dangerously-skip-permissions'
 alias clean_cache='rm -rf ~/Library/Developer/Xcode/DerivedData/* ~/Library/Developer/Xcode/iOS\ DeviceSupport/* ~/Library/Caches/*'
 {{- if eq .machine "m2-air" }}
 alias run=./run
