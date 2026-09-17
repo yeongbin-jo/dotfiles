@@ -10,7 +10,7 @@ brew "zoxide"                  # z smart-jump
 brew "eza"                     # ls replacement
 brew "bat"                     # cat replacement
 brew "direnv"
-brew "sshuttle"                # workstation: transparent proxy into the personal tailnet (installer lives in the private overlay)
+brew "sing-box"                # workstation: tun -> SOCKS transparent path into the personal tailnet (installer lives in the private overlay)
 brew "libpq"                   # psql client
 brew "zsh-autosuggestions"
 brew "zsh-syntax-highlighting"
