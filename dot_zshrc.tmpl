@@ -148,14 +148,30 @@ alias p2r="poetry export --without-hashes --without-urls | awk '{ print $1 }' FS
 {{- end }}
 
 # ── nydus: Tailscale 머신의 tmux 세션 attach-or-create (ssh+tmux 터널) ──
-#   nydus / nydus <host>  →  세션 안에서 claude, 빠져나오기 Ctrl-b d
-#   비공개 호스트(특수 동작)는 ~/.zshrc.local 의 _nydus_special 가 먼저 처리(있으면)
+#   nydus                   →  이 머신의 nydus 세션
+#   nydus <host>            →  <host> 의 nydus 세션
+#   nydus <host> <session>  →  <host> 의 <session> 세션 (예: nydus m5-pro stress)
+#   nydus . <session>       →  이 머신의 <session> 세션 (<host> 가 이 머신 이름이어도 같다)
+#   세션 안에서 claude, 빠져나오기 Ctrl-b d. 이미 tmux 안이면 중첩하지 않고 그 세션으로 전환한다.
+#   비공개 호스트(특수 동작)는 ~/.zshrc.local 의 _nydus_special 가 먼저 처리(있으면, 세션 미지정일 때만)
 nydus() {
-  [ -z "$1" ] && { tmux new -A -s nydus; return; }
-  if typeset -f _nydus_special >/dev/null 2>&1 && _nydus_special "$1"; then return; fi
-  case "$1" in
-    win-*) ssh -t "$1" 'wsl tmux new -A -s nydus' ;;  # Windows: tmux는 WSL 안에서
-    *)     ssh -t "$1" 'PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; exec tmux new -A -s nydus' ;;
+  local host="$1" session="${2:-nydus}"
+  case "$session" in
+    *[!A-Za-z0-9_-]*) echo "nydus: 세션 이름은 영문·숫자·_·- 만 쓸 수 있다: $session" >&2; return 2 ;;
+  esac
+  if [ -z "$host" ] || [ "$host" = . ] || [ "$host" = "${HOST%%.*}" ]; then
+    if [ -n "${TMUX:-}" ]; then
+      tmux has-session -t "=$session" 2>/dev/null || tmux new-session -d -s "$session"
+      tmux switch-client -t "=$session"
+    else
+      tmux new -A -s "$session"
+    fi
+    return
+  fi
+  if [ -z "$2" ] && typeset -f _nydus_special >/dev/null 2>&1 && _nydus_special "$host"; then return; fi
+  case "$host" in
+    win-*) ssh -t "$host" "wsl tmux new -A -s $session" ;;  # Windows: tmux는 WSL 안에서
+    *)     ssh -t "$host" "PATH=\"/opt/homebrew/bin:/usr/local/bin:\$PATH\"; exec tmux new -A -s $session" ;;
   esac
 }
 
