@@ -1,0 +1,22 @@
+#!/bin/sh
+# Obsidian LiveSync keepalive LaunchAgent loader
+# os: {{ .chezmoi.os }}
+# machine: {{ .machine }}
+# plist: com.yb.obsidian-livesync-keepalive.plist v1
+set -e
+
+{{- if eq .chezmoi.os "darwin" }}
+PLIST="$HOME/Library/LaunchAgents/com.yb.obsidian-livesync-keepalive.plist"
+LABEL="com.yb.obsidian-livesync-keepalive"
+DOMAIN="gui/$(id -u)"
+
+[ -f "$PLIST" ] || exit 0
+
+launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+launchctl kickstart -k "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+echo "[obsidian-livesync-keepalive] loaded $LABEL"
+{{- else }}
+echo "[obsidian-livesync-keepalive] skipped on non-darwin"
+{{- end }}

@@ -7,11 +7,10 @@ if [ -r "$CONFIG" ]; then
   . "$CONFIG"
 fi
 
-LIVESYNC_CONFIG="$HOME/.config/obsidian-agent/livesync"
-if [ -r "$LIVESYNC_CONFIG" ]; then
-  # shellcheck disable=SC1090
-  . "$LIVESYNC_CONFIG"
-fi
+# 이식용 LiveSync 설정 시드. 재키(2026-07-02) 이후 평문 passphrase 로 온보딩하면
+# 서버에는 붙지만 복호를 못 해 조용히 죽는다(m2-air 사고). 그래서 온보딩은
+# configPassphraseStore="" 기반의 기기공통 암호화 필드를 그대로 이식하는 방식만 쓴다.
+LIVESYNC_SEED="$HOME/.config/obsidian-agent/livesync-data.seed.json"
 
 VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Documents/Obsidian Vault}"
 VAULT_REMOTE="${OBSIDIAN_VAULT_REMOTE:-}"
@@ -62,11 +61,13 @@ PY
 
 configure_livesync() {
   [ -d "$VAULT_PATH/.obsidian/plugins/obsidian-livesync" ] || die "LiveSync plugin is not installed in vault"
-  [ -n "${OBSIDIAN_LIVESYNC_URI:-}" ] || die "OBSIDIAN_LIVESYNC_URI is not configured"
-  [ -n "${OBSIDIAN_LIVESYNC_USER:-}" ] || die "OBSIDIAN_LIVESYNC_USER is not configured"
-  [ -n "${OBSIDIAN_LIVESYNC_PASSWORD:-}" ] || die "OBSIDIAN_LIVESYNC_PASSWORD is not configured"
-  [ -n "${OBSIDIAN_LIVESYNC_DBNAME:-}" ] || die "OBSIDIAN_LIVESYNC_DBNAME is not configured"
-  [ -n "${OBSIDIAN_LIVESYNC_PASSPHRASE:-}" ] || die "OBSIDIAN_LIVESYNC_PASSPHRASE is not configured"
+  [ -r "$LIVESYNC_SEED" ] || die "portable LiveSync seed is missing: $LIVESYNC_SEED
+  run 'dotfiles-sync' to fetch it, or onboard from a healthy device via
+  LiveSync settings -> Copy setup URI."
+
+  if pgrep -x Obsidian >/dev/null 2>&1; then
+    die "Obsidian is running. Quit it first - a live instance rewrites data.json on exit."
+  fi
 
   data_file="$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json"
   if [ -f "$data_file" ] && [ "${1:-}" != "--force" ]; then
@@ -75,52 +76,38 @@ configure_livesync() {
   fi
 
   mkdir -p "$(dirname "$data_file")"
-  export OBSIDIAN_LIVESYNC_URI
-  export OBSIDIAN_LIVESYNC_USER
-  export OBSIDIAN_LIVESYNC_PASSWORD
-  export OBSIDIAN_LIVESYNC_DBNAME
-  export OBSIDIAN_LIVESYNC_PASSPHRASE
-  python3 - "$data_file" "$(hostname -s)" <<'PY'
+  python3 - "$LIVESYNC_SEED" "$data_file" "$VAULT_PATH" "$(hostname -s)" <<'PY'
+import hashlib
 import json
 import os
 import pathlib
 import sys
 
-data_file = pathlib.Path(sys.argv[1])
-device = sys.argv[2]
+seed_file, data_file, vault_path, device = sys.argv[1:5]
+seed = json.loads(pathlib.Path(seed_file).read_text())
 
-config = {
-    "remoteType": "COUCHDB",
-    "couchDB_URI": os.environ["OBSIDIAN_LIVESYNC_URI"].rstrip("/"),
-    "couchDB_USER": os.environ["OBSIDIAN_LIVESYNC_USER"],
-    "couchDB_PASSWORD": os.environ["OBSIDIAN_LIVESYNC_PASSWORD"],
-    "couchDB_DBNAME": os.environ["OBSIDIAN_LIVESYNC_DBNAME"],
-    "useRequestAPI": False,
-    "couchDB_CustomHeaders": "",
-    "liveSync": True,
-    "syncOnSave": True,
-    "syncOnStart": True,
-    "syncOnFileOpen": True,
-    "syncOnEditorSave": True,
-    "periodicReplication": False,
-    "periodicReplicationInterval": 60,
-    "keepReplicationActiveInBackground": True,
-    "readChunksOnline": True,
-    "encrypt": True,
-    "passphrase": os.environ["OBSIDIAN_LIVESYNC_PASSPHRASE"],
-    "E2EEAlgorithm": "v2",
-    "usePathObfuscation": False,
-    "useIgnoreFiles": True,
-    "ignoreFiles": ".gitignore",
-    "syncInternalFiles": False,
-    "deviceAndVaultName": device,
-    "isConfigured": True,
-    "settingVersion": 10,
-}
+# 이식 가능한 형태인지 게이트. 하나라도 빠지면 그 기기는 붙어도 복호를 못 한다.
+for key in ("encryptedCouchDBConnection", "encryptedPassphrase", "remoteConfigurations"):
+    if not seed.get(key):
+        raise SystemExit(f"seed is not portable: {key} is missing")
+if seed.get("configPassphraseStore", "") != "":
+    raise SystemExit("seed is locked to a device passphrase (configPassphraseStore is set)")
+for key in ("couchDB_PASSWORD", "passphrase", "couchDB_URI", "couchDB_USER"):
+    if seed.get(key):
+        raise SystemExit(f"seed carries a plaintext secret: {key}")
 
-data_file.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
-data_file.chmod(0o600)
-print(str(data_file))
+vault = pathlib.Path(vault_path).expanduser().resolve()
+config = dict(seed)
+# Obsidian 이 붙이는 볼트 ID 와 같은 규칙으로 로컬 DB 이름을 분리한다.
+config["additionalSuffixOfDatabaseName"] = hashlib.sha1(str(vault).encode("utf-8")).hexdigest()[:16]
+config["deviceAndVaultName"] = device
+
+target = pathlib.Path(data_file)
+tmp = target.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n")
+tmp.chmod(0o600)
+os.replace(tmp, target)
+print(str(target))
 PY
 }
 
@@ -141,7 +128,7 @@ case "$cmd" in
       git clone "$VAULT_REMOTE" "$VAULT_PATH"
     fi
     configure_obsidian >/dev/null
-    if [ -r "$LIVESYNC_CONFIG" ] && [ ! -f "$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json" ]; then
+    if [ -r "$LIVESYNC_SEED" ] && [ ! -f "$VAULT_PATH/.obsidian/plugins/obsidian-livesync/data.json" ]; then
       configure_livesync >/dev/null
     fi
     git -C "$VAULT_PATH" status --short --branch
@@ -161,8 +148,9 @@ case "$cmd" in
     ensure_repo
     need_remote
     git -C "$VAULT_PATH" remote set-url origin "$VAULT_REMOTE"
-    if ! git -C "$VAULT_PATH" diff --quiet --ignore-submodules -- ||
-       ! git -C "$VAULT_PATH" diff --cached --quiet --ignore-submodules --; then
+    # git diff 는 추적 파일만 본다. 새 노트만 생긴 날엔 diff 가 비어
+    # add -A 자체를 건너뛰어 백업이 조용히 멈췄다(2026-09-19 발견).
+    if [ -n "$(git -C "$VAULT_PATH" status --porcelain --untracked-files=all)" ]; then
       git -C "$VAULT_PATH" add -A
       git -C "$VAULT_PATH" commit -m "vault sync: $(date '+%Y-%m-%d %H:%M:%S')"
     fi

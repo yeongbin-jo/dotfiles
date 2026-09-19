@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# LiveSync 는 Obsidian 이 떠 있을 때만 복제한다. 앱이 꺼져 있으면 그 머신에서
+# (에이전트가 파일시스템에 직접 쓴 노트를 포함해) 아무것도 나가지 않는다.
+# 2026-09-19: m5-pro 가 하루 넘게 꺼져 있어 그날 쓴 노트가 원격에 없었다.
+set -euo pipefail
+
+CONFIG="$HOME/.config/obsidian-agent/config"
+if [ -r "$CONFIG" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
+
+VAULT_PATH="${OBSIDIAN_VAULT_PATH:-$HOME/Obsidian Vault}"
+LOG="$HOME/Library/Logs/obsidian-livesync-keepalive.log"
+
+# LiveSync 볼트가 없는 머신에서는 관여하지 않는다.
+[ -d "$VAULT_PATH/.obsidian/plugins/obsidian-livesync" ] || exit 0
+
+pgrep -x Obsidian >/dev/null 2>&1 && exit 0
+
+mkdir -p "$(dirname "$LOG")"
+# -g 로 포커스만 양보한다. -j(숨김)를 주면 렌더러가 안 떠서 볼트·플러그인이
+# 로드되지 않고, 프로세스만 살아 있는 채 복제가 0 이 된다(2026-09-19 m2-air 에서 실측).
+if open -g -a Obsidian >/dev/null 2>&1; then
+  printf '[%s] started Obsidian\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$LOG"
+else
+  printf '[%s] failed to start Obsidian\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>"$LOG"
+fi
