@@ -6,9 +6,10 @@ copy contains sensitive session material. Never place it in a workspace, logs, p
 On non-macOS machines, stop at the authentication gate rather than adapting this procedure by guess.
 
 This route has been exercised end to end (2026-09-02): reopening an existing Artifact authoring
-chat, revising the same HTML Artifact in place, publishing it, and verifying HTTP 200 on the public
-URL from a separate browser. That records route viability only; it is not permission to skip the
-approval gate, content QA, public verification, or ephemeral-profile destruction.
+chat, revising the same HTML Artifact in place, saving it, and—when explicitly requested—sharing it
+and verifying HTTP 200 on the public URL from a separate browser. That records route viability only;
+it is not permission to skip the approval gate, content QA, requested visibility verification, or
+ephemeral-profile destruction.
 
 ## Launch
 
@@ -62,23 +63,25 @@ agent-browser --session claude-artifact connect "$cdp_port"
 
 5. Select the Claude tab by its `https://claude.ai/` URL instead of assuming the active tab. A copied
    profile can open an extension welcome page during startup. Confirm authenticated Claude UI before
-   uploading public material. If the Claude tab shows login, challenge, or an unexpected account,
+   sending source material to Claude. If the Claude tab shows login, challenge, or an unexpected account,
    stop and clean up.
 
 ## Reliable UI sequence
 
 - Start from the original authoring chat in update mode; use `https://claude.ai/new` only for create.
 - Confirm a named HTML Artifact with Preview/Code controls after generation.
-- Use the Artifact pane's `More options`, not conversation Share.
-- Select `Publish artifact`, `Publish to web`, then `Publish & copy link`.
-- Extract the URL from the DOM if the field truncates it. Match only
+- For private/account-only delivery, verify the Artifact is saved, retains the expected identity,
+  and reads back correctly. Do not open Share merely because the task says `publish` / `발행`.
+- Only when public sharing was explicitly requested, use the Artifact pane's `More options`, not
+  conversation Share. Select `Publish artifact`, `Publish to web`, then `Publish & copy link`.
+  Extract the URL from the DOM if the field truncates it. Match only
   `https://claude.ai/public/artifacts/[A-Za-z0-9_-]+`.
 - A clean browser may meet an anti-bot interstitial. That is not proof of privacy; use the main
   workflow's alternate clean interactive verification.
 - For QA, downloading the generated HTML to a restrictive temporary path is allowed only as a
-  faithful render/test input; it is never the deliverable. Exercise the same public URL in a new
-  cookie-free browser context and confirm at least one navigation control plus the critical custom
-  interaction.
+  faithful render/test input; it is never the deliverable. For explicit public delivery, exercise
+  the same public URL in a new cookie-free browser context and confirm at least one navigation
+  control plus the critical custom interaction.
 
 ## Cleanup
 

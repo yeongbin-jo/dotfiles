@@ -15,8 +15,10 @@ source material. Do not invent missing product decisions merely to fill the cont
   yourself; a URL Claude cannot see is not a usable reference.
 - **Target experience:** primary viewport/device, navigation model, expected sections/pages, and
   required interactions.
-- **Public-data boundary:** identifiers and material to omit or anonymize.
-- **Acceptance checks:** observable facts that must be true before publication.
+- **Visibility mode:** private/account-only by default; public only when explicitly requested.
+- **Data boundary:** identifiers and material to omit or anonymize for that visibility mode.
+- **Acceptance checks:** observable facts that must be true before saving and, when requested,
+  public sharing.
 
 ## Prompt discipline
 

@@ -34,11 +34,12 @@ rendered Artifact, not Claude's prose description of it.
   fast transitions, and animations whose static frame is meaningless.
 - Honor reduced-motion preferences and provide a stable state after animation completes.
 
-## Interaction and publication check
+## Interaction and delivery check
 
 1. Capture representative screenshots before and after an update.
 2. Exercise navigation, tabs/pages, expanders, filters, tooltips, and any simulated controls.
 3. Check browser console errors and failed external resources.
-4. Repeat the critical visual and interaction checks on the public unauthenticated URL.
-5. Publish only when the result passes the contract. A renderable page is not automatically an
-   acceptable page.
+4. Repeat the critical checks on the saved Artifact through authenticated/native read-back. When
+   public sharing was explicitly requested, repeat them on the unauthenticated public URL too.
+5. Save the final result only when it passes the contract. A renderable page is not automatically
+   an acceptable page, and private delivery does not require public sharing.
