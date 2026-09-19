@@ -101,6 +101,16 @@ config = dict(seed)
 # Obsidian 이 붙이는 볼트 ID 와 같은 규칙으로 로컬 DB 이름을 분리한다.
 config["additionalSuffixOfDatabaseName"] = hashlib.sha1(str(vault).encode("utf-8")).hexdigest()[:16]
 config["deviceAndVaultName"] = device
+config["P2P_DevicePeerName"] = ""
+config["lastReadUpdates"] = 0
+config["versionUpFlash"] = ""
+# doctorProcessedVersion 은 시드가 실어 온 값을 그대로 쓴다. 이 값은 플러그인 버전이
+# 아니라 DoctorRegulation 의 버전(0.25.79 기준 "0.25.27")과 비교되고, 같을 때만
+# Doctor 마법사를 건너뛴다. 비우거나 플러그인 버전을 넣으면 첫 실행에 마법사가 떠
+# 복제를 붙잡고, 거기서 "예"를 고르면 customChunkSize·usePluginSyncV2 가 바뀌어
+# 편대의 tweak 합의와 어긋난다(2026-09-19 m2-air 에서 겪음).
+if not config.get("doctorProcessedVersion"):
+    raise SystemExit("seed is missing doctorProcessedVersion (Doctor wizard would block replication)")
 
 target = pathlib.Path(data_file)
 tmp = target.with_suffix(".json.tmp")
