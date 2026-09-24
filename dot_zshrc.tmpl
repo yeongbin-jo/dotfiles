@@ -108,6 +108,26 @@ alias scrcpy='scrcpy --stay-awake'
 alias lock='lock-screen'                                              # 즉시 비번 잠금(작업은 계속 실행)
 alias claude-yolo='claude --dangerously-skip-permissions'
 alias codex-yolo='codex --dangerously-bypass-approvals-and-sandbox'
+# ── opencode: 승인 프롬프트 없이, 단 되돌리기 어려운 것만 막고 ──
+#    opencode 에는 claude 의 --dangerously-skip-permissions 같은 플래그가 없다.
+#    권한은 설정으로만 정해지고, OPENCODE_CONFIG_CONTENT 가 프로젝트 설정보다
+#    우선하므로 이 호출에서만 규칙을 덮어쓴다.
+#
+#    🚨 deny 패턴의 선행 `*` 를 지우지 말 것. 패턴은 명령 문자열 앞에서 고정
+#    매칭된다(실측: `DENYME*` 는 `echo DENYME hello` 를 못 잡는다). 선행 `*` 가
+#    없으면 `cd frontend && pnpm build` 같은 체이닝에 전부 뚫린다.
+#    구체 패턴이 와일드카드를 이긴다는 것도 실측 확인(2026-09-18, opencode 1.18.31).
+opencode-yolo() {
+  local rules='{"permission":{"*":"allow","bash":{"*":"allow",
+    "*pnpm build*":"deny",
+    "*--no-verify*":"deny",
+    "*git push*--force*":"deny",
+    "*git push*-f *":"deny",
+    "*git push*-f":"deny",
+    "*git reset*--hard*":"deny",
+    "*git commit*--amend*":"deny"}}}'
+  OPENCODE_CONFIG_CONTENT="$rules" opencode "$@"
+}
 # ── 두 번째 codex 계정 ──
 #    codex 에는 계정 전환 기능이 없다. 인증은 CODEX_HOME 하나에 auth.json 한
 #    벌뿐이라, 홈을 갈라야 계정이 갈린다(커뮤니티의 codex-profiles/aisw 등도
