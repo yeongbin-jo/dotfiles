@@ -5,7 +5,13 @@
 #   우(터미널 오른쪽 끝 정렬): 🗓️ Nd HH:mm:ss 주간 리셋 카운트다운 + 잔여량 프로그레스 바
 #   ※ 카운트다운 실시간 틱하려면 settings.json 에 "refreshInterval": 1 필요
 #   ※ 우측 정렬은 Claude Code 가 COLUMNS env 를 주입하는 v2.1.153+ 필요 (미주입 시 좌측 fallback)
-python3 -c '
+#   ※ python 은 pyenv shim 을 피해 절대경로로 — 이유는 statusline-wrapper.sh 머리말
+if [ -z "${STATUSLINE_PYTHON:-}" ]; then
+  for STATUSLINE_PYTHON in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+    [ -x "$STATUSLINE_PYTHON" ] && break
+  done
+fi
+"$STATUSLINE_PYTHON" -c '
 import sys, json, os, re, subprocess, time
 
 try:
@@ -41,7 +47,7 @@ if branch:
 # 세션 단위로 스코프한다: 전역 파일이던 첫 판은 이 머신의 모든 세션에 남의 루프를 그렸다.
 # 상태 파일이 없으면 아무것도 출력하지 않으므로 루프를 돌리지 않는 세션은 그대로.
 try:
-    _loop = subprocess.run([os.path.expanduser("~/.claude/loop-status.py"),
+    _loop = subprocess.run([sys.executable, os.path.expanduser("~/.claude/loop-status.py"),
                             d.get("session_id") or ""],
                            capture_output=True, text=True, timeout=1).stdout.strip()
     if _loop:
