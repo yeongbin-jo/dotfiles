@@ -1,0 +1,476 @@
+#!/usr/bin/env python3
+"""tmux 2nd status line for Google Antigravity CLI (`agy`) panes.
+
+codex-statusline hands agy panes over to this script, with the same arguments:
+    pane_current_command pane_current_path client_width pane_pid [workdir]
+
+Left:  AGY  CONTEXT [bar] account
+Right: WEEKLY RESET 🗓️ countdown [weekly remaining bar]
+
+The weekly quota comes from `agy -p /usage --output-format json`, which takes
+several seconds, so it is never called on the status tick. The tick reads a
+cache and, when the cache is stale, starts one detached refresh guarded by a
+lock file — the same scheme codex-statusline uses.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+
+CACHE_TTL_SECONDS = 180
+FETCH_TIMEOUT_SECONDS = 25
+TAIL_BYTES = 2 * 1024 * 1024
+CONTEXT_WINDOW = 1_048_576
+# Quota groups the /usage command reports. The CLI defaults to Gemini, so that
+# group answers unless it is missing.
+PREFERRED_GROUP = "Gemini"
+
+AGY_HOME = Path.home() / ".gemini" / "antigravity-cli"
+BRAIN_DIR = AGY_HOME / "brain"
+LOG_DIR = AGY_HOME / "log"
+LAST_CONVERSATIONS = AGY_HOME / "cache" / "last_conversations.json"
+UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def system_tool(name: str, *candidates: str) -> str:
+    # A tmux `#()` job inherits the PATH the tmux server started with, so name
+    # the locations instead of trusting the lookup alone.
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return shutil.which(name) or name
+
+
+PS = system_tool("ps", "/bin/ps", "/usr/bin/ps")
+LSOF = system_tool("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
+
+
+def agy_binary() -> str:
+    found = shutil.which("agy")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / ".local/bin/agy",
+        Path.home() / ".antigravity/antigravity/bin/agy",
+        Path("/opt/homebrew/bin/agy"),
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return "agy"
+
+
+# ── cache ────────────────────────────────────────────────────────────────
+
+def cache_dir() -> Path:
+    root = os.environ.get("TMPDIR") or "/tmp"
+    path = Path(root) / "agy-tmux-statusline"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def home_slug() -> str:
+    # Quota belongs to the account, and agy keeps one account per home.
+    return hashlib.sha1(str(AGY_HOME.resolve()).encode()).hexdigest()[:12]
+
+
+def cache_file() -> Path:
+    return cache_dir() / f"state-{home_slug()}.json"
+
+
+def lock_file() -> Path:
+    return cache_dir() / f"refresh-{home_slug()}.lock"
+
+
+def read_cache() -> dict:
+    try:
+        return json.loads(cache_file().read_text())
+    except Exception:
+        return {}
+
+
+def write_cache(state: dict) -> None:
+    target = cache_file()
+    tmp = target.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, separators=(",", ":")))
+    os.replace(tmp, target)
+
+
+def acquire_lock() -> bool:
+    try:
+        fd = os.open(str(lock_file()), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - lock_file().stat().st_mtime > FETCH_TIMEOUT_SECONDS * 2:
+                lock_file().unlink()
+                return acquire_lock()
+        except OSError:
+            pass
+        return False
+
+
+def release_lock() -> None:
+    try:
+        lock_file().unlink()
+    except FileNotFoundError:
+        pass
+
+
+# ── weekly quota ─────────────────────────────────────────────────────────
+
+def parse_reset(value) -> int | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
+
+
+def extract_state(payload: dict) -> dict:
+    groups = ((payload.get("command") or {}).get("data") or {}).get("groups") or []
+    weekly_by_group: list[tuple[str, dict]] = []
+    for group in groups:
+        for bucket in group.get("buckets") or []:
+            if bucket.get("window") == "weekly" or str(bucket.get("id", "")).endswith("-weekly"):
+                weekly_by_group.append((str(group.get("name") or ""), bucket))
+    if not weekly_by_group:
+        raise RuntimeError("weekly bucket unavailable")
+
+    _, weekly = next(
+        (item for item in weekly_by_group if PREFERRED_GROUP in item[0]),
+        weekly_by_group[0],
+    )
+    fraction = weekly.get("remaining_fraction")
+    resets_at = parse_reset(weekly.get("reset_time"))
+    if not isinstance(fraction, (int, float)) or resets_at is None:
+        raise RuntimeError("weekly bucket incomplete")
+    return {
+        "remaining_percent": round(max(0.0, min(1.0, float(fraction))) * 100),
+        "resets_at": resets_at,
+        "fetched_at": int(time.time()),
+        "error": None,
+    }
+
+
+def fetch_usage() -> dict:
+    # Run outside any project so the probe cannot be recorded as that
+    # directory's last conversation.
+    proc = subprocess.run(
+        [agy_binary(), "-p", "/usage", "--output-format", "json"],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=FETCH_TIMEOUT_SECONDS,
+        cwd=str(cache_dir()),
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"agy /usage exited {proc.returncode}")
+    return json.loads(proc.stdout)
+
+
+def refresh(lock_held: bool = False) -> int:
+    if not lock_held and not acquire_lock():
+        return 0
+    try:
+        state = read_cache()
+        try:
+            state.update(extract_state(fetch_usage()))
+        except Exception as exc:
+            # Keep the last good numbers; the renderer marks them stale.
+            state.update({"error": str(exc), "error_at": int(time.time())})
+        write_cache(state)
+        return 0
+    finally:
+        release_lock()
+
+
+def start_background_refresh() -> None:
+    if not acquire_lock():
+        return
+    try:
+        # sys.executable is the interpreter this tick already resolved, so the
+        # refresh does not go back through a PATH lookup (pyenv shim).
+        subprocess.Popen(
+            [sys.executable, __file__, "--refresh", "--lock-held"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        release_lock()
+
+
+# ── pane → conversation ──────────────────────────────────────────────────
+
+def agy_pid_for_pane(pane_pid: int | None) -> int | None:
+    """The pid of the agy process running in this pane (exact executable name)."""
+    if not pane_pid:
+        return None
+    try:
+        listing = subprocess.run(
+            [PS, "-axo", "pid=,ppid=,command="],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout
+    except Exception:
+        return None
+    children: dict[int, list[tuple[int, str]]] = {}
+    for line in listing.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            child_pid, parent_pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        children.setdefault(parent_pid, []).append((child_pid, parts[2]))
+    pending, seen = [pane_pid], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for child_pid, command in children.get(current, []):
+            if os.path.basename(command.split(None, 1)[0]) == "agy":
+                return child_pid
+            pending.append(child_pid)
+    return None
+
+
+def conversation_for_pid(agy_pid: int | None) -> str | None:
+    """The conversation this pane's agy has open.
+
+    Several agy sessions can share a cwd, so the open files are the only
+    per-pane fact: agy holds conversations/<uuid>.db and brain/<uuid>/ open.
+    """
+    if not agy_pid:
+        return None
+    try:
+        listing = subprocess.run(
+            [LSOF, "-p", str(agy_pid), "-Fn"],
+            capture_output=True, text=True, timeout=0.4, check=False,
+        ).stdout
+    except Exception:
+        return None
+    for line in listing.splitlines():
+        if not line.startswith("n"):
+            continue
+        name = line[1:]
+        if "/conversations/" in name or "/brain/" in name:
+            match = UUID_RE.search(name)
+            if match:
+                return match.group(0)
+    return None
+
+
+def conversation_for_cwd(cwd: str | None) -> str | None:
+    if not cwd:
+        return None
+    try:
+        return json.loads(LAST_CONVERSATIONS.read_text()).get(cwd)
+    except Exception:
+        return None
+
+
+def transcript_path(conversation: str | None) -> Path | None:
+    if not conversation:
+        return None
+    path = BRAIN_DIR / conversation / ".system_generated" / "logs" / "transcript.jsonl"
+    return path if path.exists() else None
+
+
+def tail_lines(path: Path, max_bytes: int = TAIL_BYTES) -> list[bytes]:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            end = f.tell()
+            f.seek(max(0, end - max_bytes))
+            return f.read().splitlines()
+    except OSError:
+        return []
+
+
+def context_used_percent(transcript: Path | None) -> int:
+    if not transcript:
+        return 0
+    for raw_line in reversed(tail_lines(transcript)):
+        try:
+            step = json.loads(raw_line)
+        except Exception:
+            continue
+        if "input_tokens" not in step:
+            continue
+        tokens = int(step.get("input_tokens") or 0) + int(step.get("cache_read_tokens") or 0)
+        used = min(max(tokens, 0), CONTEXT_WINDOW)
+        return min(100, int(math.floor(used / CONTEXT_WINDOW * 100.0 + 0.5)))
+    return 0
+
+
+# ── account ──────────────────────────────────────────────────────────────
+
+ACCOUNT_RE = re.compile(r"authenticated successfully as (\S+@\S+)|email=([^\s,]+@[^\s,]+)")
+
+
+def account_label() -> str:
+    """Local part of the signed-in account, read from the newest CLI logs."""
+    try:
+        logs = sorted(LOG_DIR.glob("cli-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return ""
+    for log in logs[:5]:
+        try:
+            text = log.read_text(errors="ignore")
+        except OSError:
+            continue
+        found = ""
+        for match in ACCOUNT_RE.finditer(text):
+            found = match.group(1) or match.group(2) or found
+        if found:
+            return found.split("@", 1)[0]
+    return ""
+
+
+# ── render ───────────────────────────────────────────────────────────────
+
+TMUX_STYLE_RE = re.compile(r"#\[[^\]]*\]")
+
+
+def tmux_style(style: str, text: str) -> str:
+    return f"#[{style}]{text}#[default]"
+
+
+def visible_width(text: str) -> int:
+    width = 0
+    for ch in TMUX_STYLE_RE.sub("", text):
+        if ch == "️":
+            continue
+        width += 2 if ord(ch) >= 0x1F300 else 1
+    return width
+
+
+def countdown_text(seconds: int) -> str:
+    if seconds <= 0:
+        return "now"
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days:
+        return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
+    return f"{hours:02}:{minutes:02}:{secs:02}"
+
+
+def context_bar_color(used: int) -> str:
+    # Mirrors codex-statusline: more context used → redder.
+    if used < 40:
+        return "colour153"
+    if used < 65:
+        return "colour111"
+    if used < 82:
+        return "colour131"
+    return "colour210"
+
+
+def weekly_bar_color(remaining: int) -> str:
+    # Mirrors codex-statusline: more remaining → greener.
+    if remaining > 50:
+        return "colour114"
+    if remaining > 30:
+        return "colour178"
+    if remaining > 12:
+        return "colour208"
+    return "colour167"
+
+
+def percent_bar(value: int, color: str, width: int = 14) -> str:
+    value = max(0, min(100, int(round(value))))
+    text = f"{value}% ".rjust(width)
+    filled = max(0, min(width, round(width * value / 100)))
+    return (
+        "#[fg=#54546d]["
+        f"#[bg={color},fg=#1f1f28,bold]{text[:filled]}"
+        f"#[bg=#2a2a37,fg=#938aa9]{text[filled:]}"
+        "#[default]#[fg=#54546d]]#[default]"
+    )
+
+
+def render(context_used: int, state: dict, columns: int, account: str) -> str:
+    left = (
+        tmux_style("fg=#7e9cd8,bold", " AGY    ")
+        + tmux_style("fg=#dcd7ba", "CONTEXT ")
+        + percent_bar(context_used, context_bar_color(context_used))
+        + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
+    )
+    if "remaining_percent" in state and "resets_at" in state:
+        remaining = int(state["remaining_percent"])
+        stale = ""
+        fetched_at = int(state.get("fetched_at") or 0)
+        if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
+            stale = tmux_style("fg=#e6c384", " stale")
+        right = (
+            tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
+            + tmux_style("fg=#c8c093", "🗓️ " + countdown_text(int(state["resets_at"]) - int(time.time())))
+            + " "
+            + percent_bar(remaining, weekly_bar_color(remaining))
+            + stale
+        )
+    elif state.get("error"):
+        right = tmux_style("fg=#ff5d62", "AGY weekly unavailable ")
+    else:
+        right = tmux_style("fg=#727169", "AGY weekly loading... ")
+    pad = columns - visible_width(left) - visible_width(right) - 2 if columns else 0
+    return left + " " * max(2, pad) + right
+
+
+def print_status() -> int:
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    command = args[0] if len(args) >= 1 else None
+    cwd = args[1] if len(args) >= 2 else None
+    try:
+        columns = int(args[2]) if len(args) >= 3 else 0
+    except ValueError:
+        columns = 0
+    try:
+        pane_pid = int(args[3]) if len(args) >= 4 else None
+    except ValueError:
+        pane_pid = None
+
+    agy_pid = agy_pid_for_pane(pane_pid)
+    if not agy_pid and command != "agy":
+        print("")
+        return 0
+
+    conversation = conversation_for_pid(agy_pid) or conversation_for_cwd(cwd)
+    context_used = context_used_percent(transcript_path(conversation))
+
+    state = read_cache()
+    if int(time.time()) - int(state.get("fetched_at") or 0) > CACHE_TTL_SECONDS:
+        # A failing probe must not be retried on every tick.
+        if int(time.time()) - int(state.get("error_at") or 0) > CACHE_TTL_SECONDS:
+            start_background_refresh()
+
+    print(render(context_used, state, columns, account_label()))
+    return 0
+
+
+def main() -> int:
+    if "--refresh" in sys.argv:
+        return refresh(lock_held="--lock-held" in sys.argv)
+    return print_status()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

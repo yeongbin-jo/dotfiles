@@ -324,8 +324,12 @@ def claude_pid_for_pane(pane_pid: int | None) -> int | None:
     return agent_pid_for_pane(pane_pid, "claude")
 
 
-def agent_pid_for_pane(pane_pid: int | None, needle: str) -> int | None:
-    """The pid of the agent process actually running in this pane."""
+def agent_pid_for_pane(pane_pid: int | None, needle: str, exact: bool = False) -> int | None:
+    """The pid of the agent process actually running in this pane.
+
+    `exact` matches the executable name only, for short names like `agy` that
+    would otherwise match inside unrelated command lines.
+    """
     if not pane_pid:
         return None
     try:
@@ -352,10 +356,24 @@ def agent_pid_for_pane(pane_pid: int | None, needle: str) -> int | None:
             continue
         seen.add(current)
         for child_pid, command in children.get(current, []):
-            if needle in command:
+            if exact:
+                if os.path.basename(command.split(None, 1)[0]) == needle:
+                    return child_pid
+            elif needle in command:
                 return child_pid
             pending.append(child_pid)
     return None
+
+
+def exec_agy_statusline() -> None:
+    """Hand an Antigravity CLI pane to its own status line script.
+
+    agy keeps its quota, transcripts and account in a different shape, so it
+    lives in ~/.tmux/agy-statusline rather than in this file. sys.executable
+    reuses the interpreter already resolved, not a PATH lookup (pyenv shim).
+    """
+    script = Path(__file__).resolve().with_name("agy-statusline")
+    os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
 
 
 def rollout_for_pid(codex_pid: int | None) -> str | None:
@@ -821,7 +839,11 @@ def print_status() -> int:
                 pane_pid = int(args[3])
             except ValueError:
                 pane_pid = None
+        if command == "agy":
+            exec_agy_statusline()
         if not is_codex_command(command) and not is_claude_command(command, pane_pid):
+            if agent_pid_for_pane(pane_pid, "agy", exact=True):
+                exec_agy_statusline()
             print("")
             return 0
         if len(args) >= 3:
