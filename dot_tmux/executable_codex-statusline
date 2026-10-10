@@ -109,6 +109,7 @@ def system_tool(name: str, *candidates: str) -> str:
 
 
 PS = system_tool("ps", "/bin/ps", "/usr/bin/ps")
+TMUX = system_tool("tmux", "/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux")
 LSOF = system_tool("lsof", "/usr/sbin/lsof", "/usr/bin/lsof")
 
 
@@ -272,6 +273,21 @@ def is_codex_command(command: str | None) -> bool:
     return command == "codex" or command.startswith("codex-") or command.startswith("codex_")
 
 
+def command_runs(command: str, needle: str) -> bool:
+    """True when `command` launches the program `needle`.
+
+    Match the program, never the whole command line: an opencode pane that runs
+    /private/tmp/claude-501/.../x.sh is not a claude pane. The second token
+    covers interpreter launches (node …/codex.js).
+    """
+    tokens = command.split(None, 2)[:2]
+    names = [os.path.basename(token) for token in tokens if not token.startswith("-")]
+    return any(
+        name == needle or name.startswith((needle + "-", needle + "_", needle + "."))
+        for name in names
+    )
+
+
 def process_tree_contains(pid: int | None, needle: str) -> bool:
     if not pid:
         return False
@@ -306,9 +322,7 @@ def process_tree_contains(pid: int | None, needle: str) -> bool:
             continue
         seen.add(current)
         for child_pid, command in children_by_parent.get(current, []):
-            executable = command.split(None, 1)[0]
-            executable_name = os.path.basename(executable)
-            if needle in command or executable_name == needle:
+            if command_runs(command, needle):
                 return True
             pending.append(child_pid)
     return False
@@ -359,7 +373,7 @@ def agent_pid_for_pane(pane_pid: int | None, needle: str, exact: bool = False) -
             if exact:
                 if os.path.basename(command.split(None, 1)[0]) == needle:
                     return child_pid
-            elif needle in command:
+            elif command_runs(command, needle):
                 return child_pid
             pending.append(child_pid)
     return None
@@ -794,6 +808,336 @@ def render_claude_line(cwd: str | None, columns: int = 0, account: str = "") -> 
     )
 
 
+
+# ── opencode ────────────────────────────────────────────────────────────────
+# opencode keeps every session in one sqlite DB; each assistant message carries
+# its token usage, model and cost. Zen is pay-as-you-go and has no window, so its
+# right-hand side shows spend. The Go subscription does have one: its weekly
+# window comes from the usage endpoint below and renders like Codex and Claude.
+OPENCODE_DATA_DIR = Path(
+    os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+) / "opencode"
+OPENCODE_DB = OPENCODE_DATA_DIR / "opencode.db"
+OPENCODE_MODELS = Path(
+    os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+) / "opencode" / "models.json"
+
+
+def is_opencode_command(command: str | None, pane_pid: int | None = None) -> bool:
+    if command and (command == "opencode" or command.startswith("opencode-")):
+        return True
+    return process_tree_contains(pane_pid, "opencode")
+
+
+def opencode_context_limit(provider: str, model: str) -> int:
+    """Context window from opencode's own models.dev cache.
+
+    models.json is ~5MB, so the limits are distilled into a small cache keyed by
+    its mtime instead of parsing it on every status refresh.
+    """
+    try:
+        mtime = int(OPENCODE_MODELS.stat().st_mtime)
+    except OSError:
+        return 0
+    small = cache_dir() / "opencode-context-limits.json"
+    try:
+        cached = json.loads(small.read_text())
+        if cached.get("mtime") == mtime:
+            return int(cached["limits"].get(f"{provider}/{model}") or 0)
+    except Exception:
+        pass
+    try:
+        data = json.loads(OPENCODE_MODELS.read_text())
+    except Exception:
+        return 0
+    limits = {}
+    for provider_id, entry in data.items():
+        for model_id, spec in ((entry or {}).get("models") or {}).items():
+            context = ((spec or {}).get("limit") or {}).get("context")
+            if context:
+                limits[f"{provider_id}/{model_id}"] = int(context)
+    try:
+        tmp = small.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"mtime": mtime, "limits": limits}, separators=(",", ":")))
+        os.replace(tmp, small)
+    except OSError:
+        pass
+    return int(limits.get(f"{provider}/{model}") or 0)
+
+
+def opencode_session_for_pane(pane_pid: int | None) -> str | None:
+    """The session this pane's opencode was started on (`-s`/`--session`).
+
+    Panes that share a directory would otherwise all show whichever session was
+    touched last. A pane started without the flag falls back to the directory.
+    """
+    pid = agent_pid_for_pane(pane_pid, "opencode")
+    if not pid:
+        return None
+    try:
+        argv = subprocess.run(
+            [PS, "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout.split()
+    except Exception:
+        return None
+    for index, token in enumerate(argv):
+        if token in ("-s", "--session") and index + 1 < len(argv):
+            return argv[index + 1]
+        if token.startswith("--session="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def opencode_title_for_pane(pane_pid: int | None) -> str:
+    """The session title opencode put in the pane title ("OC | <title>").
+
+    A pane moves to a new session without restarting, so argv goes stale; the
+    title follows the session. tmux truncates it with an ellipsis.
+    """
+    if not pane_pid:
+        return ""
+    try:
+        listing = subprocess.run(
+            [TMUX, "list-panes", "-a", "-F", "#{pane_pid}\t#{pane_title}"],
+            capture_output=True, text=True, timeout=0.2, check=False,
+        ).stdout
+    except Exception:
+        return ""
+    for line in listing.splitlines():
+        pid, _, title = line.partition("\t")
+        if pid == str(pane_pid) and title.startswith("OC | "):
+            return title[5:].rstrip("…").rstrip()
+    return ""
+
+
+def opencode_state(cwd: str | None, session_id: str | None = None, title: str = "") -> dict:
+    """Latest session in the pane's directory + spend today / this week.
+
+    Read-only, with a short busy timeout, so a running opencode is never blocked.
+    Messages still streaming (or errored) report zero tokens and are skipped.
+    """
+    if not OPENCODE_DB.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{OPENCODE_DB}?mode=ro", uri=True, timeout=0.3)
+    except sqlite3.Error:
+        return {}
+    state: dict = {}
+    try:
+        session = None
+        if title:
+            session = conn.execute(
+                "select id from session where parent_id is null and substr(title, 1, ?) = ? "
+                "order by time_updated desc limit 1",
+                (len(title), title),
+            ).fetchone()
+        session = session or ((session_id,) if session_id else None) or conn.execute(
+            "select id from session where directory = ? order by time_updated desc limit 1",
+            (cwd or "",),
+        ).fetchone()
+        if session:
+            row = conn.execute(
+                "select data from message where session_id = ? "
+                "and json_extract(data, '$.role') = 'assistant' "
+                "and coalesce(json_extract(data, '$.tokens.total'), "
+                "json_extract(data, '$.tokens.input') + json_extract(data, '$.tokens.output'), 0) > 0 "
+                "order by time_created desc limit 1",
+                (session[0],),
+            ).fetchone()
+            if row:
+                message = json.loads(row[0])
+                tokens = message.get("tokens") or {}
+                cache = tokens.get("cache") or {}
+                total = int(tokens.get("total") or 0) or (
+                    int(tokens.get("input") or 0) + int(tokens.get("output") or 0)
+                    + int(tokens.get("reasoning") or 0)
+                    + int(cache.get("read") or 0) + int(cache.get("write") or 0)
+                )
+                provider = str(message.get("providerID") or "")
+                model = str(message.get("modelID") or "")
+                limit = opencode_context_limit(provider, model)
+                state["model"] = model
+                state["provider"] = provider
+                if limit:
+                    state["context_used_percent"] = context_used_percent(total, limit)
+
+        local = time.localtime()
+        day_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+        week_start = day_start - local.tm_wday * 86400  # 월요일 00:00
+        spent = conn.execute(
+            "select "
+            "coalesce(sum(case when time_created >= ? then json_extract(data, '$.cost') end), 0), "
+            "coalesce(sum(json_extract(data, '$.cost')), 0) "
+            "from message where time_created >= ? and json_extract(data, '$.role') = 'assistant'",
+            (int(day_start * 1000), int(week_start * 1000)),
+        ).fetchone()
+        if spent:
+            state["spend_today"] = float(spent[0] or 0)
+            state["spend_week"] = float(spent[1] or 0)
+    except (sqlite3.Error, ValueError):
+        pass
+    finally:
+        conn.close()
+    return state
+
+
+def money(amount: float) -> str:
+    # 무료 모델 위주라 1센트 미만이 흔하다 — $0.00 으로 찍으면 안 쓴 것처럼 보인다.
+    if 0 < amount < 0.01:
+        return "<$0.01"
+    return f"${amount:.2f}"
+
+
+# OpenCode Go keeps its limits server-side (5h / weekly / monthly, in dollars).
+# The console does not expose them to the CLI, but the Go API answers
+#   GET /zen/go/v1/usage  ->  {"usage": {"weekly": {"percent", "resetsAt"}, ...}}
+# with the same key opencode stores for the provider. `percent` is *used* and is
+# floored to an integer, so light use reads 0% used for a while. The weekly
+# window is fixed: it resets Monday 00:00 UTC. The endpoint is undocumented —
+# on any failure the line falls back to spend only, never to a guessed bar.
+OPENCODE_AUTH = OPENCODE_DATA_DIR / "auth.json"
+OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage"
+OPENCODE_GO_PROVIDER = "opencode-go"
+
+
+def opencode_go_cache_file() -> Path:
+    return cache_dir() / "opencode-go-usage.json"
+
+
+def opencode_go_lock_file() -> Path:
+    return cache_dir() / "opencode-go-refresh.lock"
+
+
+def opencode_go_key() -> str:
+    try:
+        auth = json.loads(OPENCODE_AUTH.read_text())
+    except Exception:
+        return ""
+    for provider in (OPENCODE_GO_PROVIDER, "opencode"):
+        key = (auth.get(provider) or {}).get("key")
+        if key:
+            return str(key)
+    return ""
+
+
+def iso_to_epoch(value: str) -> int:
+    from datetime import datetime
+    return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+
+
+def refresh_opencode_go() -> int:
+    import urllib.request
+
+    lock = opencode_go_lock_file()
+    try:
+        state = json.loads(opencode_go_cache_file().read_text())
+    except Exception:
+        state = {}
+    try:
+        key = opencode_go_key()
+        if not key:
+            raise RuntimeError("no opencode-go key")
+        request = urllib.request.Request(
+            OPENCODE_GO_USAGE_URL,
+            headers={"Authorization": f"Bearer {key}", "User-Agent": "tmux-statusline"},
+        )
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+            weekly = json.loads(response.read().decode())["usage"]["weekly"]
+        used = clamp_percent(weekly.get("percent"))
+        state = {
+            "remaining_percent": round(100.0 - used),
+            "resets_at": iso_to_epoch(weekly["resetsAt"]),
+            "fetched_at": int(time.time()),
+            "error": None,
+        }
+    except Exception as exc:
+        state.update({"error": str(exc)[:200], "error_at": int(time.time())})
+    try:
+        target = opencode_go_cache_file()
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, separators=(",", ":")))
+        os.replace(tmp, target)
+    finally:
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+    return 0
+
+
+def opencode_go_weekly() -> dict:
+    """Cached weekly window; kicks a background refresh when the cache is old."""
+    try:
+        state = json.loads(opencode_go_cache_file().read_text())
+    except Exception:
+        state = {}
+    last_try = max(int(state.get("fetched_at") or 0), int(state.get("error_at") or 0))
+    if time.time() - last_try > CACHE_TTL_SECONDS:
+        lock = opencode_go_lock_file()
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            subprocess.Popen(
+                [sys.executable, __file__, "--refresh-opencode-go"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > FETCH_TIMEOUT_SECONDS * 2:
+                    lock.unlink()
+            except OSError:
+                pass
+        except Exception:
+            pass
+    if "remaining_percent" in state and "resets_at" in state:
+        return state
+    return {}
+
+
+def render_opencode_line(cwd: str | None, columns: int = 0, pane_pid: int | None = None) -> str:
+    state = opencode_state(
+        cwd, opencode_session_for_pane(pane_pid), opencode_title_for_pane(pane_pid)
+    )
+    context_used = int(state.get("context_used_percent") or 0)
+    left = (
+        tmux_style("fg=#957fb8,bold", " OPENCODE ")
+        + (tmux_style("fg=#727169", f"{state['model'][:24]} ") if state.get("model") else "")
+        + tmux_style("fg=#dcd7ba", "CONTEXT ")
+        + percent_bar(context_used, context_bar_color(context_used))
+    )
+    weekly = opencode_go_weekly() if state.get("provider") == OPENCODE_GO_PROVIDER else {}
+    if "spend_week" not in state and not weekly:
+        return left
+    right = ""
+    if "spend_week" in state:
+        right += (
+            tmux_style("fg=#dcd7ba", "SPEND ")
+            + tmux_style("fg=#727169", "TODAY ")
+            + tmux_style("fg=#c8c093", money(state['spend_today']))
+            + tmux_style("fg=#727169", "  WEEK ")
+            + tmux_style("fg=#c8c093", money(state['spend_week']))
+        )
+    if weekly:
+        # Same right-hand block as Codex and Claude: countdown + weekly remaining.
+        seconds = int(weekly["resets_at"]) - int(time.time())
+        stale = ""
+        if time.time() - int(weekly.get("fetched_at") or 0) > CACHE_TTL_SECONDS * 10:
+            stale = tmux_style("fg=#e6c384", " stale")
+        remaining = int(weekly["remaining_percent"])
+        right += (
+            ("   " if right else "")
+            + tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
+            + tmux_style("fg=#c8c093", "🗓️ " + countdown_text(seconds))
+            + " "
+            + percent_bar(remaining, weekly_bar_color(remaining))
+            + stale
+        )
+    pad = columns - visible_width(left) - visible_width(right) - 2 if columns else 0
+    return left + " " * max(2, pad) + right
+
 def refresh(lock_held: bool = False) -> int:
     if not lock_held and not acquire_lock():
         return 0
@@ -841,7 +1185,11 @@ def print_status() -> int:
                 pane_pid = None
         if command == "agy":
             exec_agy_statusline()
-        if not is_codex_command(command) and not is_claude_command(command, pane_pid):
+        if (
+            not is_codex_command(command)
+            and not is_claude_command(command, pane_pid)
+            and not is_opencode_command(command, pane_pid)
+        ):
             if agent_pid_for_pane(pane_pid, "agy", exact=True):
                 exec_agy_statusline()
             print("")
@@ -853,6 +1201,11 @@ def print_status() -> int:
                 columns = 0
     else:
         cwd = args[0] if args else None
+
+    if command is not None and not is_codex_command(command) \
+            and not is_claude_command(command, pane_pid) and is_opencode_command(command, pane_pid):
+        print(render_opencode_line(cwd, columns, pane_pid))
+        return 0
 
     if is_claude_command(command, pane_pid):
         # Transcripts and the account label both live under the pane's own
@@ -892,6 +1245,8 @@ def main() -> int:
     global ACTIVE_CODEX_HOME
     if "--codex-home" in sys.argv:
         ACTIVE_CODEX_HOME = Path(sys.argv[sys.argv.index("--codex-home") + 1])
+    if "--refresh-opencode-go" in sys.argv:
+        return refresh_opencode_go()
     if "--refresh" in sys.argv:
         return refresh(lock_held="--lock-held" in sys.argv)
     return print_status()
