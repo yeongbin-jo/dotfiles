@@ -32,12 +32,19 @@ def log(msg):
 
 def node_path():
     """launchd 는 로그인 셸 PATH 가 없다 — nvm · homebrew 의 node 를 직접 찾는다."""
-    cands = sorted(glob.glob(os.path.join(HOME, ".nvm/versions/node/*/bin")), reverse=True)
-    cands += ["/opt/homebrew/bin", "/usr/local/bin"]
-    for d in cands:
-        if os.path.exists(os.path.join(d, "npx")):
-            return d
-    return None
+    # 가장 높은 판을 고른다 — 머신마다 nvm 에 옛 node(18·20)만 있고 homebrew 쪽이 최신인 경우가 있다(m2-air).
+    best, best_v = None, ()
+    for d in glob.glob(os.path.join(HOME, ".nvm/versions/node/*/bin")) + ["/opt/homebrew/bin", "/usr/local/bin"]:
+        if not os.path.exists(os.path.join(d, "npx")):
+            continue
+        try:
+            out = subprocess.run([os.path.join(d, "node"), "-v"], capture_output=True, text=True, timeout=10).stdout
+            v = tuple(int(x) for x in out.strip().lstrip("v").split("."))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if v > best_v:
+            best, best_v = d, v
+    return best
 
 
 def run(cmd, env=None, timeout=900):
@@ -154,8 +161,12 @@ def update_npm(entry, cutoff, state, env):
     scope = ["--all-detected"]
     if subprocess.run(["pgrep", "-f", "Claude.app/Contents/MacOS/Claude"], capture_output=True).returncode == 0:
         # 실행 중인 Claude Desktop 은 메모리의 설정으로 파일을 다시 써 등록을 지운다 — 그 클라이언트만 빼고 나머지는 맞춘다.
-        plan = subprocess.run(base[:4] + ["--all-detected", "--dry-run", "--format", "json"], env=e0,
-                              capture_output=True, text=True, timeout=300).stdout
+        p = subprocess.run(base[:4] + ["--all-detected", "--dry-run", "--format", "json"], env=e0,
+                           capture_output=True, text=True, timeout=300)
+        plan = p.stdout
+        if not plan.strip():
+            log(f"{pkg}: 계획 조회 실패 rc={p.returncode} {p.stderr.strip()[-300:]}")
+            return
         ids = [a["id"].split(":", 1)[1] for a in (json.loads(plan or "{}").get("plannedActions") or [])
                if isinstance(a, dict) and str(a.get("id", "")).startswith("configure_client:")]
         scope = []
