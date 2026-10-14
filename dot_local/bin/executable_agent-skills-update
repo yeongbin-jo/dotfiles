@@ -46,7 +46,10 @@ def run(cmd, env=None, timeout=900):
         return 0
     p = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                        errors="replace", timeout=timeout)
-    tail = (p.stdout + p.stderr).strip().splitlines()[-5:]
+    lines = [ln for ln in (p.stdout + p.stderr).strip().splitlines() if "npm notice" not in ln]
+    tail = lines[-(5 if p.returncode == 0 else 25):]
+    if p.returncode:
+        log(f"  rc={p.returncode}")
     for line in tail:
         log("  " + line[:200])
     return p.returncode
@@ -146,12 +149,23 @@ def update_npm(entry, cutoff, state, env):
     if cur in rel and rel[cur] > rel[ver]:
         log(f"{pkg}: 설치본 {cur} 이 후보 {ver} 보다 새롭다 — 내리지 않는다")
         return
-    if subprocess.run(["pgrep", "-f", "Claude.app/Contents/MacOS/Claude"], capture_output=True).returncode == 0:
-        log(f"{pkg}: Claude Desktop 실행 중 — 설정을 덮어쓸 수 있어 다음 회차로 미룬다")
-        return
     base = ["npx", "-y", f"{pkg}@{ver}", "setup", "--yes"]
     e0 = {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}
-    rc = run(base + ["--all-detected"], e0)
+    scope = ["--all-detected"]
+    if subprocess.run(["pgrep", "-f", "Claude.app/Contents/MacOS/Claude"], capture_output=True).returncode == 0:
+        # 실행 중인 Claude Desktop 은 메모리의 설정으로 파일을 다시 써 등록을 지운다 — 그 클라이언트만 빼고 나머지는 맞춘다.
+        plan = subprocess.run(base[:4] + ["--all-detected", "--dry-run", "--format", "json"], env=e0,
+                              capture_output=True, text=True, timeout=300).stdout
+        ids = [a["id"].split(":", 1)[1] for a in (json.loads(plan or "{}").get("plannedActions") or [])
+               if isinstance(a, dict) and str(a.get("id", "")).startswith("configure_client:")]
+        scope = []
+        for c in ids:
+            if c != "claude_desktop":
+                scope += ["--client", c]
+        log(f"{pkg}: Claude Desktop 실행 중 — Desktop 만 빼고 맞춘다 ({', '.join(c for c in ids if c != 'claude_desktop')})")
+        if not scope:
+            return
+    rc = run(base + scope, e0)
     for home in claude_homes()[1:]:
         rc |= run(base + ["--client", "claude_code"], dict(e0, CLAUDE_CONFIG_DIR=home))
     if rc == 0:
