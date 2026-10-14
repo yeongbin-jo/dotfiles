@@ -1,0 +1,28 @@
+#!/bin/sh
+# tmux 상태줄 배터리 위젯 (macOS 전용, status-right 의 #() 에서 호출)
+#  · 출력: "<색> AC|BAT <잔량>" — 뒤의 '%' 는 tmux.conf 쪽에 '%%' 로 붙는다.
+#  · 부수효과: 배터리 구동(BAT)이거나 잔량이 100 미만이면 status-style 배경을
+#    어두운 적색(Kanagawa winterRed #43242b)으로 바꾸고, 아니면 원래 배경으로 되돌린다.
+#    글자색은 그대로 두므로 가독성이 유지된다. 값이 바뀔 때만 set 한다.
+#  인자 $1 = #{socket_path} (이 tmux 서버에만 적용)
+SOCK=$1
+NORMAL_BG='#1f1f28'
+ALERT_BG='#43242b'
+
+B=$(pmset -g batt 2>/dev/null)
+P=$(printf '%s\n' "$B" | grep -i internal | cut -d';' -f1 | grep -Eo '[0-9]+' | tail -1)
+P=${P:-100}
+if printf '%s\n' "$B" | grep -q "AC Power"; then T=AC; else T=BAT; fi
+
+if [ "$P" -le 20 ]; then C='#[fg=#ff5d62]'
+elif [ "$P" -le 50 ]; then C='#[fg=#e6c384]'
+else C='#[fg=#98bb6c]'; fi
+
+if [ "$T" = BAT ] || [ "$P" -lt 100 ]; then BG=$ALERT_BG; else BG=$NORMAL_BG; fi
+WANT="bg=$BG,fg=#dcd7ba"
+if [ -n "$SOCK" ]; then
+  CUR=$(tmux -S "$SOCK" show -gv status-style 2>/dev/null)
+  [ "$CUR" = "$WANT" ] || tmux -S "$SOCK" set -g status-style "$WANT"
+fi
+
+echo "$C $T $P"

@@ -107,7 +107,8 @@ set -g  status-right '#[fg=#ff5d62,bold]#{?pane_synchronized,SYNC   ,}#[default]
 set -ga status-right ' #[fg=#727169]CPU#(L=`sysctl -n vm.loadavg | cut -d" " -f2`; N=`sysctl -n hw.ncpu`; I=`echo $L | cut -d. -f1`; if [ ${I:-0} -ge $N ]; then C="#[fg=#ff5d62]"; else C="#[fg=#ffa066]"; fi; echo $C $L)'
 set -ga status-right '   #[fg=#727169]MEM#(F=`memory_pressure | grep "free percentage" | grep -Eo "[0-9]+" | tail -1`; U=`expr 100 - ${F:-0}`; if [ $U -ge 90 ]; then C="#[fg=#ff5d62]"; elif [ $U -ge 75 ]; then C="#[fg=#e6c384]"; else C="#[fg=#7aa89f]"; fi; echo $C $U)%%'
 {{- if ne .role "server" }}
-set -ga status-right '  #(P=`pmset -g batt | grep -i internal | cut -d";" -f1 | grep -Eo "[0-9]+" | tail -1`; A=`pmset -g batt | grep -c "AC Power"`; if [ ${A:-0} -ge 1 ]; then T=AC; else T=BAT; fi; if [ ${P:-100} -le 20 ]; then C="#[fg=#ff5d62]"; elif [ ${P:-100} -le 50 ]; then C="#[fg=#e6c384]"; else C="#[fg=#98bb6c]"; fi; echo $C $T $P)%%'
+#    BAT 구동이거나 잔량 100 미만이면 스크립트가 status-style 배경을 어두운 적색으로 바꾼다.
+set -ga status-right '  #(~/.tmux/battery-status "#{socket_path}")%%'
 {{- end }}
 {{- else }}
 set -ga status-right ' #[fg=#727169]CPU#(L=`cut -d" " -f1 /proc/loadavg`; N=`nproc`; I=`echo $L | cut -d. -f1`; if [ ${I:-0} -ge $N ]; then C="#[fg=#ff5d62]"; else C="#[fg=#ffa066]"; fi; echo $C $L)'
