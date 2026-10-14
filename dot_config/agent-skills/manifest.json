@@ -1,0 +1,30 @@
+{
+  "_comment": "에이전트 외부 스킬 목록 — agent-skills-update 가 매일 이 목록대로 맞춘다. 스킬 내용은 레포에 넣지 않는다(넣는 순간 묵는다). 새 판은 cooldown_days 가 지난 것만 받는다(오염된 판이 바로 들어오지 않게 — 모든 세션이 권한 우회 모드라서).",
+  "cooldown_days": 3,
+  "github": [
+    {
+      "repo": "heygen-com/hyperframes",
+      "skills": [
+        "hyperframes",
+        "hyperframes-animation",
+        "hyperframes-audio",
+        "hyperframes-cli",
+        "hyperframes-core",
+        "hyperframes-creative",
+        "hyperframes-keyframes",
+        "hyperframes-registry",
+        "hyperframes-studio",
+        "media-use",
+        "general-video",
+        "pr-to-video",
+        "product-launch-video"
+      ]
+    }
+  ],
+  "npm_setup": [
+    {
+      "package": "rea-agents",
+      "mcp_server": "rea"
+    }
+  ]
+}

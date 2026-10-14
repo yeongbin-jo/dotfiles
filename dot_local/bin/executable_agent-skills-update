@@ -1,0 +1,197 @@
+#!/usr/bin/python3
+"""agent-skills-update — ~/.config/agent-skills/manifest.json 의 외부 스킬을 최신으로 맞춘다.
+
+- github 스킬(npx skills): 기본 브랜치에서 cooldown_days 이전의 마지막 커밋에 고정해 설치한다.
+  설치된 것이 그보다 새로우면 건드리지 않는다(내리지 않는다).
+- npm_setup 패키지(rea-agents 등): cooldown_days 이전에 나온 마지막 정식 판으로 `setup` 을 돌린다.
+  Claude 홈이 여럿이면(~/.claude, ~/.claude-*, ~/.claude2 …) 홈마다 MCP 등록을 맞춘다.
+- 실제 파일은 ~/.agents/skills 한 벌. 공유 심링크가 아닌 Claude 홈의 skills 디렉터리에는 심링크를 건다.
+
+launchd(com.yb.agent-skills-update)가 하루 한 번 돌린다. 손으로: `agent-skills-update [--dry-run]`.
+로그 ~/Library/Logs/agent-skills-update.log · 상태 ~/.local/state/agent-skills/state.json
+"""
+import datetime as dt
+import glob
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+
+HOME = os.path.expanduser("~")
+MANIFEST = os.path.join(HOME, ".config/agent-skills/manifest.json")
+STATE = os.path.join(HOME, ".local/state/agent-skills/state.json")
+LOCK = os.path.join(HOME, ".agents/.skill-lock.json")
+AGENTS_SKILLS = os.path.join(HOME, ".agents/skills")
+DRY = "--dry-run" in sys.argv
+
+
+def log(msg):
+    print(f"[{dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
+
+
+def node_path():
+    """launchd 는 로그인 셸 PATH 가 없다 — nvm · homebrew 의 node 를 직접 찾는다."""
+    cands = sorted(glob.glob(os.path.join(HOME, ".nvm/versions/node/*/bin")), reverse=True)
+    cands += ["/opt/homebrew/bin", "/usr/local/bin"]
+    for d in cands:
+        if os.path.exists(os.path.join(d, "npx")):
+            return d
+    return None
+
+
+def run(cmd, env=None, timeout=900):
+    log("$ " + " ".join(cmd))
+    if DRY:
+        return 0
+    p = subprocess.run(cmd, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                       errors="replace", timeout=timeout)
+    tail = (p.stdout + p.stderr).strip().splitlines()[-5:]
+    for line in tail:
+        log("  " + line[:200])
+    return p.returncode
+
+
+def load(path, default):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def parse_ts(s):
+    return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def claude_homes():
+    """~/.claude 와 그 형제 홈(~/.claude-yb · ~/.claude2 …). settings.json 이 있는 디렉터리만."""
+    homes = [os.path.join(HOME, ".claude")]
+    for d in sorted(glob.glob(os.path.join(HOME, ".claude?*"))):
+        if os.path.isdir(d) and not os.path.islink(d) and os.path.exists(os.path.join(d, "settings.json")):
+            homes.append(d)
+    return [h for h in homes if os.path.isdir(h)]
+
+
+def link_into_homes(names):
+    """공유 심링크가 아닌 Claude 홈의 skills 에 ~/.agents/skills/<이름> 심링크를 건다(없을 때만)."""
+    for home in claude_homes()[1:]:
+        sd = os.path.join(home, "skills")
+        if os.path.islink(sd) or not os.path.isdir(sd):
+            continue
+        for n in names:
+            src, dst = os.path.join(AGENTS_SKILLS, n), os.path.join(sd, n)
+            if os.path.isdir(src) and not os.path.lexists(dst):
+                log(f"link {dst} -> {src}")
+                if not DRY:
+                    os.symlink(src, dst)
+
+
+def update_github(entry, cutoff, state, env):
+    repo, names = entry["repo"], entry["skills"]
+    url = f"https://api.github.com/repos/{repo}/commits?until={cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}&per_page=1"
+    req = urllib.request.Request(url, headers={"User-Agent": "agent-skills-update"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        c = json.load(r)[0]
+    sha, when = c["sha"], parse_ts(c["commit"]["committer"]["date"])
+    st = state.setdefault(repo, {})
+    # 설치본의 기준 시각: 이 스크립트가 고정해 설치한 커밋 시각, 없으면 잠금 파일 updatedAt 의 최댓값
+    # (updatedAt 은 내용이 바뀐 스킬만 갱신된다 — 가장 최근 값이 그 소스를 마지막으로 받은 시각이다).
+    lock = load(LOCK, {}).get("skills", {})
+    stamps = [parse_ts(v["updatedAt"]) for k, v in lock.items()
+              if k in names and repo in (v.get("source") or "") + (v.get("sourceUrl") or "") and v.get("updatedAt")]
+    have = parse_ts(st["at"]) if st.get("at") else (max(stamps) if stamps else None)
+    if have and when <= have:
+        log(f"{repo}: 설치본({have:%m-%d %H:%M})이 고정 후보 {sha[:8]}({when:%m-%d %H:%M})보다 새롭거나 같다 — 그대로")
+        link_into_homes(names)
+        return
+    cmd = ["npx", "-y", "skills", "add", f"https://github.com/{repo}/tree/{sha}", "-g", "-y",
+           "-a", "claude-code", "-a", "codex"]
+    for n in names:
+        cmd += ["-s", n]
+    # skills CLI 는 CLAUDE_CONFIG_DIR 를 따라 심링크를 건다 — 기본 홈(~/.claude)에 걸고 나머지 홈은 link_into_homes 가 맡는다.
+    if run(cmd, {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}) == 0:
+        st.update(sha=sha, at=when.isoformat())
+        log(f"{repo}: {sha[:8]}({when:%Y-%m-%d}) 설치")
+        link_into_homes(names)
+    else:
+        log(f"{repo}: 설치 실패 — 다음 회차에 다시")
+
+
+def installed_mcp_version(server):
+    for home in claude_homes():
+        cfg = os.path.join(HOME, ".claude.json") if home.endswith("/.claude") else os.path.join(home, ".claude.json")
+        args = ((load(cfg, {}).get("mcpServers") or {}).get(server) or {}).get("args") or []
+        for a in args:
+            if "@" in a and not a.startswith("@"):
+                return a.rsplit("@", 1)[1]
+    return None
+
+
+def update_npm(entry, cutoff, state, env):
+    pkg = entry["package"]
+    times = json.loads(subprocess.run(["npm", "view", pkg, "time", "--json"], env=env, capture_output=True,
+                                      text=True, timeout=60).stdout or "{}")
+    rel = {v: parse_ts(t) for v, t in times.items() if v not in ("created", "modified") and "-" not in v}
+    ok = [v for v, t in rel.items() if t <= cutoff]
+    if not ok:
+        log(f"{pkg}: 대기 기간을 넘긴 판 없음")
+        return
+    ver = max(ok, key=lambda v: rel[v])
+    cur = installed_mcp_version(entry.get("mcp_server") or pkg)
+    st = state.setdefault(pkg, {})
+    if cur == ver or st.get("version") == ver:
+        log(f"{pkg}: {ver} 그대로")
+        return
+    if cur in rel and rel[cur] > rel[ver]:
+        log(f"{pkg}: 설치본 {cur} 이 후보 {ver} 보다 새롭다 — 내리지 않는다")
+        return
+    if subprocess.run(["pgrep", "-f", "Claude.app/Contents/MacOS/Claude"], capture_output=True).returncode == 0:
+        log(f"{pkg}: Claude Desktop 실행 중 — 설정을 덮어쓸 수 있어 다음 회차로 미룬다")
+        return
+    base = ["npx", "-y", f"{pkg}@{ver}", "setup", "--yes"]
+    e0 = {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}
+    rc = run(base + ["--all-detected"], e0)
+    for home in claude_homes()[1:]:
+        rc |= run(base + ["--client", "claude_code"], dict(e0, CLAUDE_CONFIG_DIR=home))
+    if rc == 0:
+        st["version"] = ver
+        log(f"{pkg}: {cur} → {ver} (에이전트를 다시 시작해야 반영)")
+    else:
+        log(f"{pkg}: setup 실패 — 다음 회차에 다시")
+
+
+def main():
+    man = load(MANIFEST, None)
+    if not man:
+        log(f"목록 없음: {MANIFEST}")
+        return 1
+    nb = node_path()
+    if not nb:
+        log("node/npx 를 못 찾았다(nvm · homebrew)")
+        return 1
+    env = dict(os.environ, PATH=f"{nb}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=float(man.get("cooldown_days", 3)))
+    state = load(STATE, {})
+    fails = 0
+    for e in man.get("github", []):
+        try:
+            update_github(e, cutoff, state, env)
+        except Exception as ex:  # 한 소스 실패가 다른 소스를 막지 않는다
+            fails += 1
+            log(f"{e.get('repo')}: 오류 {ex!r}")
+    for e in man.get("npm_setup", []):
+        try:
+            update_npm(e, cutoff, state, env)
+        except Exception as ex:
+            fails += 1
+            log(f"{e.get('package')}: 오류 {ex!r}")
+    if not DRY:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=1)
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

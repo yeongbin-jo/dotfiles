@@ -1,0 +1,21 @@
+#!/bin/sh
+# agent-skills-update LaunchAgent loader — 외부 스킬(~/.config/agent-skills/manifest.json)을 매일 맞춘다.
+# os: {{ .chezmoi.os }} · machine: {{ .machine }}
+# plist hash: {{ include "private_Library/private_LaunchAgents/com.yb.agent-skills-update.plist.tmpl" | sha256sum }}
+# m4-mini 는 사용자가 「건드리지 않는다」고 한 동안(2026-10-13~) 싣지 않는다 — 풀리면 이 조건을 지운다.
+set -e
+
+{{- if and (eq .chezmoi.os "darwin") (ne .machine "m4-mini") }}
+PLIST="$HOME/Library/LaunchAgents/com.yb.agent-skills-update.plist"
+LABEL="com.yb.agent-skills-update"
+DOMAIN="gui/$(id -u)"
+
+[ -f "$PLIST" ] || exit 0
+
+launchctl bootout "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1 || true
+launchctl enable "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+echo "[agent-skills-update] loaded $LABEL"
+{{- else }}
+echo "[agent-skills-update] skipped ({{ .chezmoi.os }} / {{ .machine }})"
+{{- end }}
