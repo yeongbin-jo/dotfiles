@@ -19,6 +19,17 @@
         "pr-to-video",
         "product-launch-video"
       ]
+    },
+    {
+      "repo": "DietrichGebert/ponytail",
+      "skills": [
+        "ponytail",
+        "ponytail-audit",
+        "ponytail-debt",
+        "ponytail-gain",
+        "ponytail-help",
+        "ponytail-review"
+      ]
     }
   ],
   "npm_setup": [
