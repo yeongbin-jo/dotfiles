@@ -258,6 +258,7 @@ if command -v eza >/dev/null; then
   alias lt='eza --tree --level=2'
 fi
 command -v bat >/dev/null && alias cat='bat --paging=never'
+[ -d "$HOME/tools/ghidra_12.1.4_PUBLIC" ] && export GHIDRA_INSTALL_DIR="$HOME/tools/ghidra_12.1.4_PUBLIC"   # REA 등 Ghidra 연동
 [ -r /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh ] && source /opt/homebrew/share/zsh-autosuggestions/zsh-autosuggestions.zsh
 # zsh-syntax-highlighting 은 반드시 맨 마지막 source
 [ -r /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && source /opt/homebrew/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
