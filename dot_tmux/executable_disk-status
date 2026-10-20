@@ -1,0 +1,11 @@
+#!/bin/sh
+# tmux 상태줄 디스크 위젯 (status-right 의 #() 에서 호출)
+#  · 출력: "<색> DISK <사용률>" — 뒤의 '%' 는 tmux.conf 쪽에 '%%' 로 붙는다.
+#  · macOS 는 APFS 데이터 볼륨(/System/Volumes/Data)을 본다. '/' 는 읽기 전용 시스템 볼륨이라 실제 사용량이 아니다.
+#  · 90% 이상이면 빨간 글자.
+D=/System/Volumes/Data
+[ -d "$D" ] || D=/
+U=$(df -P "$D" 2>/dev/null | awk 'NR==2 { sub(/%/, "", $5); print $5 }')
+U=${U:-0}
+if [ "$U" -ge 90 ]; then C='#[fg=#ff5d62]'; else C='#[fg=#7aa89f]'; fi
+echo "#[fg=#727169]DISK$C $U"

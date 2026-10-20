@@ -98,7 +98,7 @@ setw -g window-status-separator ""
 setw -g window-status-format         '#[fg=#727169] #I #{?#{==:#{@nydus_state},running},#{?#{==:#{=-1:#{t/f/%S:window_activity}},0},⠋,#{?#{==:#{=-1:#{t/f/%S:window_activity}},1},⠙,#{?#{==:#{=-1:#{t/f/%S:window_activity}},2},⠹,#{?#{==:#{=-1:#{t/f/%S:window_activity}},3},⠸,#{?#{==:#{=-1:#{t/f/%S:window_activity}},4},⠼,#{?#{==:#{=-1:#{t/f/%S:window_activity}},5},⠴,#{?#{==:#{=-1:#{t/f/%S:window_activity}},6},⠦,#{?#{==:#{=-1:#{t/f/%S:window_activity}},7},⠧,#{?#{==:#{=-1:#{t/f/%S:window_activity}},8},⠇,⠏}}}}}}}}} ,#{?#{==:#{@nydus_state},blocked},🔴 ,#{?#{==:#{@nydus_state},awaiting},🟡 ,#{?#{==:#{@nydus_state},done},✅ ,#{?#{==:#{@nydus_state},idle},⚪ ,}}}}}#W '
 setw -g window-status-current-format '#[fg=#7e9cd8,bold] #I #{?#{==:#{@nydus_state},running},#{?#{==:#{=-1:#{t/f/%S:window_activity}},0},⠋,#{?#{==:#{=-1:#{t/f/%S:window_activity}},1},⠙,#{?#{==:#{=-1:#{t/f/%S:window_activity}},2},⠹,#{?#{==:#{=-1:#{t/f/%S:window_activity}},3},⠸,#{?#{==:#{=-1:#{t/f/%S:window_activity}},4},⠼,#{?#{==:#{=-1:#{t/f/%S:window_activity}},5},⠴,#{?#{==:#{=-1:#{t/f/%S:window_activity}},6},⠦,#{?#{==:#{=-1:#{t/f/%S:window_activity}},7},⠧,#{?#{==:#{=-1:#{t/f/%S:window_activity}},8},⠇,⠏}}}}}}}}} ,#{?#{==:#{@nydus_state},blocked},🔴 ,#{?#{==:#{@nydus_state},awaiting},🟡 ,#{?#{==:#{@nydus_state},done},✅ ,#{?#{==:#{@nydus_state},idle},⚪ ,}}}}}#W#{?window_zoomed_flag, Z,} #[default]'
 
-# ── 오른쪽: SYNC경고 · CPU(load) · MEM(used%) · [BAT|DKR] · host · 시계 ──
+# ── 오른쪽: SYNC경고 · CPU(load) · MEM(used%) · [BAT|DKR] · DISK · host · 시계 ──
 #    SYNC: synchronize-panes(모든 패널 동시입력) 켜졌을 때만 빨갛게 (사고 방지)
 #    CPU/MEM 위젯은 OS별 분기 (darwin=sysctl/memory_pressure/pmset · linux=/proc·free·docker)
 set -g  status-right-length 160
@@ -110,6 +110,8 @@ set -ga status-right '   #[fg=#727169]MEM#(F=`memory_pressure | grep "free perce
 #    BAT 구동이거나 잔량 100 미만이면 스크립트가 status-style 배경을 어두운 적색으로 바꾼다.
 set -ga status-right '  #(~/.tmux/battery-status "#{socket_path}")%%'
 {{- end }}
+#    DISK: 데이터 볼륨 사용률, 90% 이상이면 빨간 글자
+set -ga status-right '   #(~/.tmux/disk-status)%%'
 {{- else }}
 set -ga status-right ' #[fg=#727169]CPU#(L=`cut -d" " -f1 /proc/loadavg`; N=`nproc`; I=`echo $L | cut -d. -f1`; if [ ${I:-0} -ge $N ]; then C="#[fg=#ff5d62]"; else C="#[fg=#ffa066]"; fi; echo $C $L)'
 set -ga status-right '   #[fg=#727169]MEM#(T=`grep MemTotal /proc/meminfo | grep -Eo "[0-9]+"`; A=`grep MemAvailable /proc/meminfo | grep -Eo "[0-9]+"`; D=`expr ${T:-1} - ${A:-0}`; U=`expr $D \* 100 / ${T:-1}`; if [ ${U:-0} -ge 90 ]; then C="#[fg=#ff5d62]"; elif [ ${U:-0} -ge 75 ]; then C="#[fg=#e6c384]"; else C="#[fg=#7aa89f]"; fi; echo $C $U)%%'
