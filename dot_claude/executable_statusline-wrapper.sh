@@ -12,6 +12,7 @@ if [ -z "${STATUSLINE_PYTHON:-}" ]; then
   done
 fi
 export STATUSLINE_PYTHON
+export STATUSLINE_OWNER_PID="$PPID"
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/claude-statusline.XXXXXX")"
 cleanup() {

@@ -23,6 +23,8 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -99,10 +101,17 @@ def read_cache() -> dict:
 
 
 def write_cache(state: dict) -> None:
-    target = cache_file()
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, target)
+    write_json(cache_file(), state)
+
+
+def write_json(target: Path, state: dict) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, delete=False) as handle:
+        tmp = Path(handle.name)
+        json.dump(state, handle, separators=(",", ":"))
+    try:
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def acquire_lock() -> bool:
@@ -155,7 +164,8 @@ def extract_state(payload: dict) -> dict:
     )
     fraction = weekly.get("remaining_fraction")
     resets_at = parse_reset(weekly.get("reset_time"))
-    if not isinstance(fraction, (int, float)) or resets_at is None:
+    if (isinstance(fraction, bool) or not isinstance(fraction, (int, float))
+            or not math.isfinite(fraction) or not 0 <= fraction <= 1 or resets_at is None):
         raise RuntimeError("weekly bucket incomplete")
     return {
         "remaining_percent": round(max(0.0, min(1.0, float(fraction))) * 100),
@@ -259,6 +269,14 @@ def conversation_for_pid(agy_pid: int | None) -> str | None:
     """
     if not agy_pid:
         return None
+    cache = cache_dir() / f"conversation-{agy_pid}.json"
+    started = os.environ.get("STATUSLINE_AGENT_STARTED")
+    try:
+        saved = json.loads(cache.read_text())
+        if started and saved.get("started") == started and time.time() - saved["checked_at"] < 10:
+            return saved.get("conversation")
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     try:
         listing = subprocess.run(
             [LSOF, "-p", str(agy_pid), "-Fn"],
@@ -266,6 +284,7 @@ def conversation_for_pid(agy_pid: int | None) -> str | None:
         ).stdout
     except Exception:
         return None
+    conversation = None
     for line in listing.splitlines():
         if not line.startswith("n"):
             continue
@@ -273,8 +292,10 @@ def conversation_for_pid(agy_pid: int | None) -> str | None:
         if "/conversations/" in name or "/brain/" in name:
             match = UUID_RE.search(name)
             if match:
-                return match.group(0)
-    return None
+                conversation = match.group(0)
+                break
+    write_json(cache, {"started": started, "checked_at": time.time(), "conversation": conversation})
+    return conversation
 
 
 def conversation_for_cwd(cwd: str | None) -> str | None:
@@ -304,9 +325,22 @@ def tail_lines(path: Path, max_bytes: int = TAIL_BYTES) -> list[bytes]:
         return []
 
 
-def context_used_percent(transcript: Path | None) -> int:
+def context_used_percent(transcript: Path | None) -> int | None:
     if not transcript:
-        return 0
+        return None
+    cache = cache_dir() / ("context-" + hashlib.sha256(str(transcript).encode()).hexdigest()[:16] + ".json")
+    try:
+        stat = transcript.stat()
+        version = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+    except OSError:
+        return None
+    try:
+        saved = json.loads(cache.read_text())
+        if saved.get("version") == version:
+            return saved.get("used")
+    except (OSError, ValueError):
+        pass
+    result = None
     for raw_line in reversed(tail_lines(transcript)):
         try:
             step = json.loads(raw_line)
@@ -314,10 +348,14 @@ def context_used_percent(transcript: Path | None) -> int:
             continue
         if "input_tokens" not in step:
             continue
-        tokens = int(step.get("input_tokens") or 0) + int(step.get("cache_read_tokens") or 0)
-        used = min(max(tokens, 0), CONTEXT_WINDOW)
-        return min(100, int(math.floor(used / CONTEXT_WINDOW * 100.0 + 0.5)))
-    return 0
+        values = [step.get("input_tokens"), step.get("cache_read_tokens", 0)]
+        if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in values):
+            break
+        used = min(sum(values), CONTEXT_WINDOW)
+        result = min(100, int(math.floor(used / CONTEXT_WINDOW * 100.0 + 0.5)))
+        break
+    write_json(cache, {"version": version, "used": result})
+    return result
 
 
 # ── account ──────────────────────────────────────────────────────────────
@@ -333,7 +371,7 @@ def account_label() -> str:
         return ""
     for log in logs[:5]:
         try:
-            text = log.read_text(errors="ignore")
+            text = b"\n".join(tail_lines(log, 128 * 1024)).decode(errors="ignore")
         except OSError:
             continue
         found = ""
@@ -358,7 +396,7 @@ def visible_width(text: str) -> int:
     for ch in TMUX_STYLE_RE.sub("", text):
         if ch == "️":
             continue
-        width += 2 if ord(ch) >= 0x1F300 else 1
+        width += 2 if ord(ch) >= 0x1F300 or unicodedata.east_asian_width(ch) in ("W", "F") else 1
     return width
 
 
@@ -367,10 +405,10 @@ def countdown_text(seconds: int) -> str:
         return "now"
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
+    minutes = rem // 60
     if days:
-        return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
-    return f"{hours:02}:{minutes:02}:{secs:02}"
+        return f"{days}d {hours:02}:{minutes:02}"
+    return f"{hours:02}:{minutes:02}"
 
 
 def context_bar_color(used: int) -> str:
@@ -407,19 +445,18 @@ def percent_bar(value: int, color: str, width: int = 14) -> str:
     )
 
 
-def render(context_used: int, state: dict, columns: int, account: str) -> str:
+def render(context_used: int | None, state: dict, columns: int, account: str) -> str:
     left = (
         tmux_style("fg=#7e9cd8,bold", " AGY    ")
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
-        + percent_bar(context_used, context_bar_color(context_used))
+        + (percent_bar(context_used, context_bar_color(context_used)) if context_used is not None
+           else tmux_style("fg=#727169", "—"))
         + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
     )
-    if "remaining_percent" in state and "resets_at" in state:
+    if ("remaining_percent" in state and state.get("resets_at", 0) > time.time()
+            and time.time() - state.get("fetched_at", 0) <= CACHE_TTL_SECONDS * 10):
         remaining = int(state["remaining_percent"])
-        stale = ""
-        fetched_at = int(state.get("fetched_at") or 0)
-        if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
-            stale = tmux_style("fg=#e6c384", " stale")
+        stale = tmux_style("fg=#e6c384", " 갱신 실패") if state.get("error") else ""
         right = (
             tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
             + tmux_style("fg=#c8c093", "🗓️ " + countdown_text(int(state["resets_at"]) - int(time.time())))
@@ -427,7 +464,7 @@ def render(context_used: int, state: dict, columns: int, account: str) -> str:
             + percent_bar(remaining, weekly_bar_color(remaining))
             + stale
         )
-    elif state.get("error"):
+    elif state.get("error") or state.get("fetched_at"):
         right = tmux_style("fg=#ff5d62", "AGY weekly unavailable ")
     else:
         right = tmux_style("fg=#727169", "AGY weekly loading... ")
@@ -448,12 +485,15 @@ def print_status() -> int:
     except ValueError:
         pane_pid = None
 
-    agy_pid = agy_pid_for_pane(pane_pid)
+    try:
+        agy_pid = int(os.environ["STATUSLINE_AGENT_PID"])
+    except (KeyError, ValueError):
+        agy_pid = agy_pid_for_pane(pane_pid)
     if not agy_pid and command != "agy":
         print("")
         return 0
 
-    conversation = conversation_for_pid(agy_pid) or conversation_for_cwd(cwd)
+    conversation = conversation_for_pid(agy_pid)
     context_used = context_used_percent(transcript_path(conversation))
 
     state = read_cache()

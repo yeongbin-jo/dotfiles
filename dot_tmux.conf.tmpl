@@ -6,8 +6,9 @@
 # ── 기본 ──
 set -g mouse on
 set -g default-terminal "tmux-256color"
-set -as terminal-features "*:cstyle"
-set -as terminal-features "xterm-ghostty:RGB"      # truecolor (24bit)
+# Reserved indices keep config reloads idempotent. Ghostty supports atomic screen updates.
+set -s terminal-features[10] "*:cstyle"
+set -s terminal-features[11] "xterm-ghostty:RGB:sync"
 
 # ── sane defaults (tmux-sensible 핵심 인라인) ──
 set -sg escape-time 0           # vi ESC 지연 제거
@@ -122,7 +123,7 @@ set -ga status-right '   #[fg=#7e9cd8,bold]%H:%M #[fg=#54546d]%m-%d '
 
 # ── agent 전용 보조 상태줄 ──
 # status는 항상 2줄로 고정하고, 두 번째 줄의 내용만 활성 pane이 Claude/Codex일 때 표시한다.
-set -g 'status-format[1]' ' #(~/.tmux/codex-statusline "#{pane_current_command}" "#{pane_current_path}" "#{client_width}" "#{pane_pid}" "#{@codex_workdir}")'
+set -g 'status-format[1]' ' #(~/.tmux/codex-statusline #{q:pane_current_command} #{q:pane_current_path} #{client_width} #{pane_pid} #{q:@codex_workdir})'
 
 # ── 패널 경계 / 메시지 / 카피모드 ──
 set -g pane-border-style        "fg=#363646"

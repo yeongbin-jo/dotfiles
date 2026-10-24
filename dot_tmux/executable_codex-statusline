@@ -11,8 +11,11 @@ import select
 import shutil
 import sqlite3
 import subprocess
+import tempfile
+from collections import deque
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 
@@ -64,11 +67,18 @@ def read_cache() -> dict:
         return {}
 
 
+def write_json(target: Path, state: dict) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", dir=target.parent, delete=False) as handle:
+        tmp = Path(handle.name)
+        json.dump(state, handle, separators=(",", ":"))
+    try:
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def write_cache(state: dict) -> None:
-    target = cache_file()
-    tmp = target.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, separators=(",", ":")))
-    os.replace(tmp, target)
+    write_json(cache_file(), state)
 
 
 def acquire_lock() -> bool:
@@ -135,8 +145,7 @@ def app_server_request() -> dict:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        text=True,
-        bufsize=1,
+        bufsize=0,
         env=env,
     )
 
@@ -166,34 +175,40 @@ def app_server_request() -> dict:
     assert proc.stdout is not None
 
     for message in messages:
-        proc.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
+        proc.stdin.write((json.dumps(message, separators=(",", ":")) + "\n").encode())
     proc.stdin.flush()
 
-    deadline = time.time() + FETCH_TIMEOUT_SECONDS
+    deadline = time.monotonic() + FETCH_TIMEOUT_SECONDS
+    pending = b""
     try:
-        while time.time() < deadline:
-            ready, _, _ = select.select([proc.stdout], [], [], max(0.0, deadline - time.time()))
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([proc.stdout], [], [], max(0.0, deadline - time.monotonic()))
             if not ready:
                 break
-            line = proc.stdout.readline()
-            if not line:
+            chunk = os.read(proc.stdout.fileno(), 65536)
+            if not chunk:
                 break
-            payload = json.loads(line)
-            if payload.get("id") == 1:
-                if "error" in payload:
-                    raise RuntimeError(payload["error"].get("message", "rate limit request failed"))
-                return payload.get("result") or {}
+            pending += chunk
+            while b"\n" in pending:
+                line, pending = pending.split(b"\n", 1)
+                payload = json.loads(line)
+                if payload.get("id") == 1:
+                    if "error" in payload:
+                        raise RuntimeError(payload["error"].get("message", "rate limit request failed"))
+                    return payload.get("result") or {}
         raise TimeoutError("timed out reading Codex rate limits")
     finally:
         try:
             proc.stdin.close()
         except Exception:
             pass
+        proc.stdout.close()
         proc.terminate()
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
+            proc.wait()
 
 
 def clamp_percent(value) -> float:
@@ -206,13 +221,9 @@ def clamp_percent(value) -> float:
 def extract_state(result: dict) -> dict:
     limits_by_id = result.get("rateLimitsByLimitId") or {}
     limits = limits_by_id.get("codex") or result.get("rateLimits") or {}
-    weekly = limits.get("secondary")
-    if not weekly:
-        for window_name in ("primary", "secondary"):
-            window = limits.get(window_name)
-            if window and (window.get("windowDurationMins") or 0) >= 10080:
-                weekly = window
-                break
+    weekly = next((limits.get(name) for name in ("primary", "secondary")
+                   if isinstance(limits.get(name), dict)
+                   and limits[name].get("windowDurationMins") == 10080), None)
     if not weekly:
         raise RuntimeError("weekly limit window unavailable")
 
@@ -225,7 +236,9 @@ def extract_state(result: dict) -> dict:
     if not isinstance(credit_count, int):
         credit_count = 0
 
-    used = clamp_percent(weekly.get("usedPercent"))
+    used = weekly.get("usedPercent")
+    if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used) or not 0 <= used <= 100:
+        raise RuntimeError("weekly usage unavailable")
     return {
         "remaining_percent": round(100.0 - used),
         "resets_at": int(reset_epoch),
@@ -249,7 +262,7 @@ def visible_width(text: str) -> int:
         codepoint = ord(ch)
         if ch == "\ufe0f":
             continue
-        if codepoint >= 0x1F300:
+        if codepoint >= 0x1F300 or unicodedata.east_asian_width(ch) in ("W", "F"):
             width += 2
         else:
             width += 1
@@ -261,10 +274,10 @@ def countdown_text(seconds: int) -> str:
         return "now"
     days, rem = divmod(seconds, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, secs = divmod(rem, 60)
+    minutes = rem // 60
     if days:
-        return f"{days}d {hours:02}:{minutes:02}:{secs:02}"
-    return f"{hours:02}:{minutes:02}:{secs:02}"
+        return f"{days}d {hours:02}:{minutes:02}"
+    return f"{hours:02}:{minutes:02}"
 
 
 def is_codex_command(command: str | None) -> bool:
@@ -281,6 +294,8 @@ def command_runs(command: str, needle: str) -> bool:
     covers interpreter launches (node …/codex.js).
     """
     tokens = command.split(None, 2)[:2]
+    if tokens and Path(tokens[0]).name not in ("node", "bun", "python", "python3"):
+        tokens = tokens[:1]
     names = [os.path.basename(token) for token in tokens if not token.startswith("-")]
     return any(
         name == needle or name.startswith((needle + "-", needle + "_", needle + "."))
@@ -288,95 +303,124 @@ def command_runs(command: str, needle: str) -> bool:
     )
 
 
-def process_tree_contains(pid: int | None, needle: str) -> bool:
-    if not pid:
-        return False
+_processes = None
+_owner_bindings = {}
+OWNER_TTL_SECONDS = 15
+
+
+def process_snapshot() -> dict:
+    global _processes
+    if _processes is not None:
+        return _processes
     try:
-        output = subprocess.run(
-            [PS, "-axo", "pid=,ppid=,command="],
-            capture_output=True,
-            text=True,
-            timeout=0.2,
-            check=False,
-        ).stdout
-    except Exception:
-        return False
+        result = subprocess.run([PS, "-axo", "pid=,ppid=,lstart=,command="],
+                                capture_output=True, text=True, timeout=0.5, check=True,
+                                env=dict(os.environ, LC_ALL="C"))
+        rows = {}
+        for line in result.stdout.splitlines():
+            fields = line.split(None, 7)
+            if len(fields) == 8:
+                rows[int(fields[0])] = {"pid": int(fields[0]), "ppid": int(fields[1]),
+                                       "started": " ".join(fields[2:7]), "command": fields[7]}
+        _processes = rows
+    except (OSError, ValueError, subprocess.SubprocessError):
+        _processes = {}
+    return _processes
 
-    children_by_parent: dict[int, list[tuple[int, str]]] = {}
-    for line in output.splitlines():
-        parts = line.strip().split(None, 2)
-        if len(parts) < 3:
-            continue
-        try:
-            child_pid = int(parts[0])
-            parent_pid = int(parts[1])
-        except ValueError:
-            continue
-        children_by_parent.setdefault(parent_pid, []).append((child_pid, parts[2]))
 
-    pending = [pid]
-    seen: set[int] = set()
+def agent_kind(command: str) -> str | None:
+    if not command:
+        return None
+    for tool in ("codex", "claude", "opencode", "agy"):
+        if command_runs(command, tool):
+            return tool
+    if "/claude/versions/" in command.split(None, 1)[0]:
+        return "claude"
+    return None
+
+
+def process_home(pid: int, tool: str) -> str | None:
+    name = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR"}.get(tool)
+    if not name:
+        return ""
+    try:
+        if sys.platform.startswith("linux"):
+            tokens = Path(f"/proc/{pid}/environ").read_bytes().decode().split("\0")
+        else:
+            result = subprocess.run([PS, "-Ewww", "-p", str(pid)], capture_output=True,
+                                    text=True, timeout=0.3, check=True)
+            match = re.search(r"(?:^|\s)" + name + r"=(.*?)(?= [A-Za-z_][A-Za-z0-9_]*=|$)", result.stdout.strip())
+            tokens = [name + "=" + match.group(1)] if match else []
+        value = next((t.split("=", 1)[1] for t in tokens if t.startswith(name + "=")), None)
+        return value or str(Path.home() / (".codex" if tool == "codex" else ".claude"))
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return None
+
+
+def owner_for_pane(pane_pid: int | None, command: str = "") -> dict | None:
+    if not pane_pid:
+        return None
+    if pane_pid in _owner_bindings:
+        return _owner_bindings[pane_pid]
+    path = cache_dir() / f"pane-{pane_pid}.json"
+    try:
+        cached = json.loads(path.read_text())
+        if (cached.get("pid") is None and cached.get("pane_command") == command
+                and time.time() - cached["checked_at"] < OWNER_TTL_SECONDS):
+            _owner_bindings[pane_pid] = None
+            return None
+        os.kill(cached["pid"], 0)
+        if time.time() - cached["checked_at"] < OWNER_TTL_SECONDS and (
+                not agent_kind(command) or agent_kind(command) == cached["tool"]):
+            _owner_bindings[pane_pid] = cached
+            return cached
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    rows = process_snapshot()
+    children = {}
+    for row in rows.values():
+        children.setdefault(row["ppid"], []).append(row["pid"])
+    pending, seen = deque([pane_pid]), set()
+    owner = None
     while pending:
-        current = pending.pop()
-        if current in seen:
+        pid = pending.popleft()
+        if pid in seen:
             continue
-        seen.add(current)
-        for child_pid, command in children_by_parent.get(current, []):
-            if command_runs(command, needle):
-                return True
-            pending.append(child_pid)
-    return False
+        seen.add(pid)
+        row = rows.get(pid)
+        if row and (tool := agent_kind(row["command"])):
+            # Node launchers own the native CLI below them; tool subprocesses do not.
+            if Path(row["command"].split()[0]).name in ("node", "bun", "python", "python3"):
+                native = next((rows[c] for c in children.get(pid, [])
+                               if agent_kind(rows[c]["command"]) == tool), None)
+                row = native or row
+            home = process_home(row["pid"], tool)
+            if home is not None:
+                owner = {**row, "tool": tool, "home": home, "checked_at": time.time()}
+                write_json(path, owner)
+            break
+        pending.extend(children.get(pid, []))
+    if owner is None:
+        write_json(path, {"pid": None, "pane_command": command, "checked_at": time.time()})
+    _owner_bindings[pane_pid] = owner
+    return owner
+
+
+def agent_pid_for_pane(pane_pid: int | None, needle: str, exact: bool = False) -> int | None:
+    owner = owner_for_pane(pane_pid)
+    return owner["pid"] if owner and owner["tool"] == needle else None
 
 
 def codex_pid_for_pane(pane_pid: int | None) -> int | None:
-    """The pid of the codex process actually running in this pane."""
     return agent_pid_for_pane(pane_pid, "codex")
 
 
 def claude_pid_for_pane(pane_pid: int | None) -> int | None:
-    """The pid of the claude process actually running in this pane."""
     return agent_pid_for_pane(pane_pid, "claude")
 
 
-def agent_pid_for_pane(pane_pid: int | None, needle: str, exact: bool = False) -> int | None:
-    """The pid of the agent process actually running in this pane.
-
-    `exact` matches the executable name only, for short names like `agy` that
-    would otherwise match inside unrelated command lines.
-    """
-    if not pane_pid:
-        return None
-    try:
-        listing = subprocess.run(
-            [PS, "-axo", "pid=,ppid=,command="],
-            capture_output=True, text=True, timeout=0.2, check=False,
-        ).stdout
-    except Exception:
-        return None
-    children: dict[int, list[tuple[int, str]]] = {}
-    for line in listing.splitlines():
-        parts = line.strip().split(None, 2)
-        if len(parts) < 3:
-            continue
-        try:
-            child_pid, parent_pid = int(parts[0]), int(parts[1])
-        except ValueError:
-            continue
-        children.setdefault(parent_pid, []).append((child_pid, parts[2]))
-    pending, seen = [pane_pid], set()
-    while pending:
-        current = pending.pop()
-        if current in seen:
-            continue
-        seen.add(current)
-        for child_pid, command in children.get(current, []):
-            if exact:
-                if os.path.basename(command.split(None, 1)[0]) == needle:
-                    return child_pid
-            elif command_runs(command, needle):
-                return child_pid
-            pending.append(child_pid)
-    return None
+def process_tree_contains(pid: int | None, needle: str) -> bool:
+    return agent_pid_for_pane(pid, needle) is not None
 
 
 def exec_agy_statusline() -> None:
@@ -390,7 +434,7 @@ def exec_agy_statusline() -> None:
     os.execv(sys.executable, [sys.executable, str(script), *sys.argv[1:]])
 
 
-def rollout_for_pid(codex_pid: int | None) -> str | None:
+def rollout_for_pid(codex_pid: int | None, started: str = "") -> str | None:
     """The rollout this pane's codex has open.
 
     Every session in a worktree records the same `cwd` (they all run commands
@@ -400,6 +444,14 @@ def rollout_for_pid(codex_pid: int | None) -> str | None:
     """
     if not codex_pid:
         return None
+    cache = cache_dir() / f"rollout-{codex_pid}.json"
+    try:
+        saved = json.loads(cache.read_text())
+        if (saved.get("started") == started and time.time() - saved["checked_at"] < 10
+                and (saved.get("path") is None or Path(saved["path"]).is_file())):
+            return saved["path"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
     try:
         listing = subprocess.run(
             [LSOF, "-p", str(codex_pid), "-Fn"],
@@ -418,53 +470,18 @@ def rollout_for_pid(codex_pid: int | None) -> str | None:
             continue
         if mtime > newest_mtime:
             newest, newest_mtime = str(candidate), mtime
+    write_json(cache, {"started": started, "path": newest, "checked_at": time.time()})
     return newest
 
 
-def codex_home_for_pane(pane_pid: int | None) -> Path:
-    """Resolve the CODEX_HOME of the agent running in this pane.
-
-    A tmux `#()` job inherits the tmux server's environment, not the pane's, so
-    CODEX_HOME is absent here and every pane would read the default home's
-    database. With two accounts that silently shows the wrong account.
-    """
-    codex_pid = codex_pid_for_pane(pane_pid)
-    if not codex_pid:
-        return DEFAULT_CODEX_HOME
-    try:
-        env = subprocess.run(
-            [PS, "-Ewww", "-p", str(codex_pid)],
-            capture_output=True, text=True, timeout=0.2, check=False,
-        ).stdout
-    except Exception:
-        return DEFAULT_CODEX_HOME
-    for token in env.split():
-        if token.startswith("CODEX_HOME="):
-            return Path(token.split("=", 1)[1])
-    return DEFAULT_CODEX_HOME
+def codex_home_for_pane(pane_pid: int | None) -> Path | None:
+    owner = owner_for_pane(pane_pid)
+    return Path(owner["home"]) if owner and owner["tool"] == "codex" else None
 
 
-def claude_config_dir_for_pane(pane_pid: int | None) -> Path:
-    """Resolve the CLAUDE_CONFIG_DIR of the agent running in this pane.
-
-    Same reason as `codex_home_for_pane`: a tmux `#()` job inherits the tmux
-    server's environment, not the pane's, so without reading the process env
-    every pane would report the default account.
-    """
-    claude_pid = claude_pid_for_pane(pane_pid)
-    if not claude_pid:
-        return DEFAULT_CLAUDE_CONFIG_DIR
-    try:
-        env = subprocess.run(
-            [PS, "-Ewww", "-p", str(claude_pid)],
-            capture_output=True, text=True, timeout=0.2, check=False,
-        ).stdout
-    except Exception:
-        return DEFAULT_CLAUDE_CONFIG_DIR
-    for token in env.split():
-        if token.startswith("CLAUDE_CONFIG_DIR="):
-            return Path(token.split("=", 1)[1])
-    return DEFAULT_CLAUDE_CONFIG_DIR
+def claude_config_dir_for_pane(pane_pid: int | None) -> Path | None:
+    owner = owner_for_pane(pane_pid)
+    return Path(owner["home"]) if owner and owner["tool"] == "claude" else None
 
 
 def claude_account_label(config_dir: Path) -> str:
@@ -533,39 +550,6 @@ def percent_bar(remaining: int, color: str, width: int = 14) -> str:
     )
 
 
-def latest_rollout_path(cwd: str | None) -> str | None:
-    if not STATE_DB.exists():
-        return None
-
-    where = "archived=0 and coalesce(model, '') <> ''"
-    params: tuple[str, ...] = ()
-    if cwd:
-        where += " and cwd=?"
-        params = (cwd,)
-
-    try:
-        conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True, timeout=0.05)
-        try:
-            row = conn.execute(
-                f"""
-                select rollout_path
-                  from threads
-                 where {where}
-                 order by updated_at_ms desc, recency_at_ms desc
-                 limit 1
-                """,
-                params,
-            ).fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return None
-
-    if not row:
-        return None
-    return row[0]
-
-
 def tail_lines(path: Path, max_bytes: int = CONTEXT_TAIL_BYTES) -> list[bytes]:
     try:
         with path.open("rb") as f:
@@ -609,11 +593,26 @@ def session_baseline_tokens(rollout: Path) -> int:
 
 
 def latest_context_state(cwd: str | None, rollout: str | None = None) -> dict | None:
-    rollout = rollout or latest_rollout_path(cwd)
     if not rollout:
         return None
 
-    for raw_line in reversed(tail_lines(Path(rollout))):
+    path = Path(rollout)
+    cache = cache_dir() / ("context-" + hashlib.sha256(str(path).encode()).hexdigest()[:16] + ".json")
+    try:
+        stat = path.stat()
+        version = [stat.st_ino, stat.st_size, stat.st_mtime_ns]
+    except OSError:
+        return None
+    try:
+        saved = json.loads(cache.read_text())
+    except (OSError, ValueError):
+        saved = {}
+    if saved.get("version") == version:
+        return saved.get("context")
+    previous = saved.get("version")
+    baseline = (saved.get("baseline") if isinstance(previous, list) and len(previous) == 3
+                and previous[0] == stat.st_ino and previous[1] <= stat.st_size else None)
+    for raw_line in reversed(tail_lines(path)):
         try:
             event = json.loads(raw_line)
         except Exception:
@@ -628,7 +627,9 @@ def latest_context_state(cwd: str | None, rollout: str | None = None) -> dict | 
         last = info.get("last_token_usage") or {}
         context_window = info.get("model_context_window")
         total_tokens = last.get("total_tokens")
-        if not isinstance(context_window, int) or not isinstance(total_tokens, int):
+        if (isinstance(context_window, bool) or not isinstance(context_window, int) or context_window <= 0
+                or isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0):
+            write_json(cache, {"version": version, "baseline": baseline, "context": None})
             return None
 
         # codex's own footer does not count the session's opening prompt (system
@@ -636,94 +637,37 @@ def latest_context_state(cwd: str | None, rollout: str | None = None) -> dict | 
         # left" while the raw number is already tens of thousands of tokens.
         # Subtract that floor from both sides to match the pane itself; the
         # first token_count in the file is that floor.
-        baseline = session_baseline_tokens(Path(rollout))
+        if baseline is None:
+            baseline = session_baseline_tokens(path)
         if 0 < baseline < total_tokens < context_window:
             total_tokens -= baseline
             context_window -= baseline
 
-        return {
-            "used_percent": context_used_percent(total_tokens, context_window),
-            "tokens": total_tokens,
-            "window": context_window,
-        }
+        context = {"used_percent": context_used_percent(total_tokens, context_window),
+                   "tokens": total_tokens, "window": context_window}
+        write_json(cache, {"version": version, "baseline": baseline, "context": context})
+        return context
 
+    write_json(cache, {"version": version, "baseline": baseline, "context": None})
     return None
 
 
-def claude_project_dir(cwd: str | None) -> Path | None:
-    if not cwd:
-        return None
-    sanitized = cwd.replace("/", "-")
-    return ACTIVE_CLAUDE_CONFIG_DIR / "projects" / sanitized
-
-
-def latest_claude_state(cwd: str | None) -> dict | None:
-    cached = latest_claude_cache_state(cwd)
-    if cached:
-        return cached
-
-    project_dir = claude_project_dir(cwd)
-    if not project_dir or not project_dir.exists():
-        return None
-
+def latest_claude_state(owner: dict) -> dict | None:
+    root = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
+    path = root / f"owner-{home_slug(ACTIVE_CLAUDE_CONFIG_DIR)}-{owner['pid']}.json"
     try:
-        transcript_paths = sorted(
-            (p for p in project_dir.glob("*.jsonl") if p.is_file()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except OSError:
-        return None
-
-    for transcript_path in transcript_paths[:3]:
-        for raw_line in reversed(tail_lines(transcript_path)):
-            try:
-                event = json.loads(raw_line)
-            except Exception:
-                continue
-            message = event.get("message") or {}
-            usage = message.get("usage") or {}
-            if not usage:
-                continue
-            model = str(message.get("model") or "")
-            context_window = 1_000_000 if "1M" in model or "1m" in model else 200_000
-            used_tokens = (
-                int(usage.get("input_tokens") or 0)
-                + int(usage.get("cache_creation_input_tokens") or 0)
-                + int(usage.get("cache_read_input_tokens") or 0)
-                + int(usage.get("output_tokens") or 0)
-            )
-            return {
-                "context_used_percent": int(
-                    math.floor((min(used_tokens, context_window) / context_window) * 100.0 + 0.5)
-                ),
-                "updated_at": int(transcript_path.stat().st_mtime),
-            }
-    return None
-
-
-def claude_cache_key(cwd: str) -> str:
-    return hashlib.sha256(
-        (str(ACTIVE_CLAUDE_CONFIG_DIR) + "\0" + cwd).encode("utf-8")
-    ).hexdigest()[:16]
-
-
-def latest_claude_cache_state(cwd: str | None) -> dict | None:
-    cache_root = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
-    paths = []
-    if cwd:
-        paths.append(cache_root / f"{claude_cache_key(cwd)}.json")
-    paths.append(cache_root / f"latest-{home_slug(ACTIVE_CLAUDE_CONFIG_DIR)}.json")
-
-    for path in paths:
-        try:
-            state = json.loads(path.read_text())
-        except Exception:
-            continue
-        updated_at = int(state.get("updated_at") or 0)
-        if not updated_at or time.time() - updated_at > CACHE_TTL_SECONDS * 10:
-            continue
-        return state
+        binding = json.loads(path.read_text())
+        session = binding.get("session_id")
+        if not session or binding.get("owner_started") != owner["started"]:
+            return None
+        key = hashlib.sha256((str(ACTIVE_CLAUDE_CONFIG_DIR.resolve()) + "\0" + session).encode()).hexdigest()[:20]
+        state = json.loads((root / f"session-{key}.json").read_text())
+        if (state.get("owner_pid") == owner["pid"] and state.get("owner_started") == owner["started"]
+                and state.get("session_id") == session
+                and time.time() - int(state.get("updated_at") or 0) <= CACHE_TTL_SECONDS * 10):
+            return state
+    except (OSError, ValueError, TypeError):
+        pass
     return None
 
 
@@ -750,63 +694,47 @@ def codex_account_label(codex_home: Path) -> str:
     return email.split("@", 1)[0]
 
 
-def render_line(product: str, state: dict, context_used: int, columns: int = 0,
+def render_line(product: str, state: dict, context_used: int | None, columns: int = 0,
                 account: str = "") -> str:
     remaining = int(state["remaining_percent"])
     resets_at = int(state["resets_at"])
     seconds = resets_at - int(time.time())
     timer = countdown_text(seconds)
-    stale = ""
     fetched_at = int(state.get("fetched_at") or 0)
-    if fetched_at and time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
-        stale = tmux_style("fg=#e6c384", " stale")
 
     product_color = "#e6c384" if product == "CLAUDE" else "#727169"
     product_label = f" {product}  " if product == "CODEX" else f" {product} "
     left = (
         tmux_style(f"fg={product_color},bold", product_label)
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
-        + percent_bar(
-            context_used,
-            context_bar_color(context_used),
-        )
+        + (percent_bar(context_used, context_bar_color(context_used)) if context_used is not None
+           else tmux_style("fg=#727169", "—"))
         + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
     )
-    right = (
-        tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
-        + tmux_style("fg=#c8c093", "🗓️ " + timer)
-        + " "
-        + percent_bar(remaining, weekly_bar_color(remaining))
-        + stale
-    )
+    if seconds <= 0 or not fetched_at or time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
+        right = tmux_style("fg=#e6c384", "WEEKLY — 관측 오래됨")
+    else:
+        right = (tmux_style("fg=#dcd7ba", "WEEKLY RESET ")
+                 + tmux_style("fg=#c8c093", "🗓️ " + timer) + " "
+                 + percent_bar(remaining, weekly_bar_color(remaining)))
+        if state.get("error"):
+            right += tmux_style("fg=#e6c384", " 갱신 실패")
     pad = columns - visible_width(left) - visible_width(right) - 2 if columns else 0
     return left + " " * max(2, pad) + right
 
 
-def render_claude_line(cwd: str | None, columns: int = 0, account: str = "") -> str:
-    state = latest_claude_state(cwd)
-    if not state:
-        context_used = 0
-    else:
-        context_used = int(state.get("context_used_percent") or 0)
-
-    weekly_remaining = state.get("weekly_remaining_percent") if state else None
-    resets_at = state.get("weekly_resets_at") if state else None
-    if weekly_remaining is not None and resets_at is not None:
-        line_state = {
-            "remaining_percent": int(weekly_remaining),
-            "resets_at": int(resets_at),
-            "fetched_at": int(state.get("updated_at") or 0),
-        }
-        return render_line("CLAUDE", line_state, context_used, columns, account)
-
-    return (
-        tmux_style("fg=#e6c384,bold", " CLAUDE ")
-        + tmux_style("fg=#dcd7ba", "CONTEXT ")
-        + percent_bar(context_used, context_bar_color(context_used))
-        + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
-    )
-
+def render_claude_line(owner: dict, columns: int = 0, account: str = "") -> str:
+    state = latest_claude_state(owner) or {}
+    context_used = state.get("context_used_percent")
+    remaining, resets = state.get("weekly_remaining_percent"), state.get("weekly_resets_at")
+    if remaining is not None and resets is not None:
+        return render_line("CLAUDE", {"remaining_percent": remaining, "resets_at": resets,
+                                     "fetched_at": state.get("updated_at")}, context_used, columns, account)
+    return (tmux_style("fg=#e6c384,bold", " CLAUDE ") + tmux_style("fg=#dcd7ba", "CONTEXT ")
+            + (percent_bar(context_used, context_bar_color(context_used)) if context_used is not None
+               else tmux_style("fg=#727169", "—"))
+            + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
+            + tmux_style("fg=#727169", "  WEEKLY — 관측 없음"))
 
 
 # ── opencode ────────────────────────────────────────────────────────────────
@@ -857,9 +785,7 @@ def opencode_context_limit(provider: str, model: str) -> int:
             if context:
                 limits[f"{provider_id}/{model_id}"] = int(context)
     try:
-        tmp = small.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"mtime": mtime, "limits": limits}, separators=(",", ":")))
-        os.replace(tmp, small)
+        write_json(small, {"mtime": mtime, "limits": limits})
     except OSError:
         pass
     return int(limits.get(f"{provider}/{model}") or 0)
@@ -1044,7 +970,9 @@ def refresh_opencode_go() -> int:
         )
         with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             weekly = json.loads(response.read().decode())["usage"]["weekly"]
-        used = clamp_percent(weekly.get("percent"))
+        used = weekly.get("percent")
+        if isinstance(used, bool) or not isinstance(used, (int, float)) or not math.isfinite(used) or not 0 <= used <= 100:
+            raise ValueError("weekly usage unavailable")
         state = {
             "remaining_percent": round(100.0 - used),
             "resets_at": iso_to_epoch(weekly["resetsAt"]),
@@ -1055,9 +983,7 @@ def refresh_opencode_go() -> int:
         state.update({"error": str(exc)[:200], "error_at": int(time.time())})
     try:
         target = opencode_go_cache_file()
-        tmp = target.with_suffix(".tmp")
-        tmp.write_text(json.dumps(state, separators=(",", ":")))
-        os.replace(tmp, target)
+        write_json(target, state)
     finally:
         try:
             lock.unlink()
@@ -1092,7 +1018,8 @@ def opencode_go_weekly() -> dict:
                 pass
         except Exception:
             pass
-    if "remaining_percent" in state and "resets_at" in state:
+    if ("remaining_percent" in state and state.get("resets_at", 0) > time.time()
+            and time.time() - state.get("fetched_at", 0) <= CACHE_TTL_SECONDS * 10):
         return state
     return {}
 
@@ -1101,17 +1028,19 @@ def render_opencode_line(cwd: str | None, columns: int = 0, pane_pid: int | None
     state = opencode_state(
         cwd, opencode_session_for_pane(pane_pid), opencode_title_for_pane(pane_pid)
     )
-    context_used = int(state.get("context_used_percent") or 0)
+    context_used = state.get("context_used_percent")
     left = (
         tmux_style("fg=#957fb8,bold", " OPENCODE ")
         + (tmux_style("fg=#727169", f"{state['model'][:24]} ") if state.get("model") else "")
         + tmux_style("fg=#dcd7ba", "CONTEXT ")
-        + percent_bar(context_used, context_bar_color(context_used))
+        + (percent_bar(context_used, context_bar_color(context_used)) if context_used is not None
+           else tmux_style("fg=#727169", "—"))
     )
     weekly = opencode_go_weekly() if state.get("provider") == OPENCODE_GO_PROVIDER else {}
-    if "spend_week" not in state and not weekly:
+    is_go = state.get("provider") == OPENCODE_GO_PROVIDER
+    if "spend_week" not in state and not weekly and not is_go:
         return left
-    right = ""
+    right = tmux_style("fg=#e6c384", "WEEKLY — 조회 불가   ") if is_go and not weekly else ""
     if "spend_week" in state:
         right += (
             tmux_style("fg=#dcd7ba", "SPEND ")
@@ -1123,9 +1052,7 @@ def render_opencode_line(cwd: str | None, columns: int = 0, pane_pid: int | None
     if weekly:
         # Same right-hand block as Codex and Claude: countdown + weekly remaining.
         seconds = int(weekly["resets_at"]) - int(time.time())
-        stale = ""
-        if time.time() - int(weekly.get("fetched_at") or 0) > CACHE_TTL_SECONDS * 10:
-            stale = tmux_style("fg=#e6c384", " stale")
+        stale = tmux_style("fg=#e6c384", " 갱신 실패") if weekly.get("error") else ""
         remaining = int(weekly["remaining_percent"])
         right += (
             ("   " if right else "")
@@ -1171,69 +1098,45 @@ def start_background_refresh() -> None:
 
 
 def print_status() -> int:
-    now = int(time.time())
-    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
-    columns = 0
-    command = None
-    pane_pid = None
-    if len(args) >= 2:
-        command, cwd = args[0], args[1]
-        if len(args) >= 4:
-            try:
-                pane_pid = int(args[3])
-            except ValueError:
-                pane_pid = None
-        if command == "agy":
-            exec_agy_statusline()
-        if (
-            not is_codex_command(command)
-            and not is_claude_command(command, pane_pid)
-            and not is_opencode_command(command, pane_pid)
-        ):
-            if agent_pid_for_pane(pane_pid, "agy", exact=True):
-                exec_agy_statusline()
-            print("")
-            return 0
-        if len(args) >= 3:
-            try:
-                columns = int(args[2])
-            except ValueError:
-                columns = 0
-    else:
-        cwd = args[0] if args else None
-
-    if command is not None and not is_codex_command(command) \
-            and not is_claude_command(command, pane_pid) and is_opencode_command(command, pane_pid):
+    global ACTIVE_CODEX_HOME, ACTIVE_CLAUDE_CONFIG_DIR, _processes, _owner_bindings
+    _processes, _owner_bindings = None, {}
+    args = sys.argv[1:]
+    if len(args) < 4:
+        print("")
+        return 0
+    command, cwd = args[:2]
+    try:
+        columns, pane_pid = int(args[2]), int(args[3])
+    except ValueError:
+        print("")
+        return 0
+    owner = owner_for_pane(pane_pid, command)
+    if not owner:
+        print(tmux_style("fg=#727169", " AGENT — 조회 불가") if agent_kind(command) else "")
+        return 0
+    tool = owner["tool"]
+    if tool == "agy":
+        os.environ["STATUSLINE_AGENT_PID"] = str(owner["pid"])
+        os.environ["STATUSLINE_AGENT_STARTED"] = owner["started"]
+        exec_agy_statusline()
+    if tool == "opencode":
         print(render_opencode_line(cwd, columns, pane_pid))
         return 0
-
-    if is_claude_command(command, pane_pid):
-        # Transcripts and the account label both live under the pane's own
-        # config dir, so resolve it before reading either.
-        global ACTIVE_CLAUDE_CONFIG_DIR
-        ACTIVE_CLAUDE_CONFIG_DIR = claude_config_dir_for_pane(pane_pid)
-        account = claude_account_label(ACTIVE_CLAUDE_CONFIG_DIR)
-        print(render_claude_line(cwd, columns, account))
+    if tool == "claude":
+        ACTIVE_CLAUDE_CONFIG_DIR = Path(owner["home"])
+        print(render_claude_line(owner, columns, claude_account_label(ACTIVE_CLAUDE_CONFIG_DIR)))
         return 0
-
-    # The cache is keyed by home, so it can only be read once the pane's account
-    # is known.
-    global STATE_DB, ACTIVE_CODEX_HOME
-    ACTIVE_CODEX_HOME = codex_home_for_pane(pane_pid)
-    STATE_DB = ACTIVE_CODEX_HOME / "state_5.sqlite"
+    ACTIVE_CODEX_HOME = Path(owner["home"])
     state = read_cache()
-    fetched_at = int(state.get("fetched_at") or 0)
-
+    now = int(time.time())
     logical_cwd = args[4] if len(args) >= 5 and args[4] else cwd
-    context = latest_context_state(logical_cwd, rollout_for_pid(codex_pid_for_pane(pane_pid)))
-    context_used = int(context["used_percent"]) if context else 0
-
-    if now - fetched_at > CACHE_TTL_SECONDS:
+    context = latest_context_state(logical_cwd, rollout_for_pid(owner["pid"], owner["started"]))
+    context_used = context["used_percent"] if context else None
+    last_try = max(int(state.get("fetched_at") or 0), int(state.get("error_at") or 0))
+    if now - last_try > CACHE_TTL_SECONDS:
         start_background_refresh()
-
     if "remaining_percent" in state and "resets_at" in state:
-        print(render_line("CODEX", state, context_used, columns,
-                          codex_account_label(STATE_DB.parent)))
+        print(render_line("CODEX", state, context_used, columns, codex_account_label(ACTIVE_CODEX_HOME)))
     elif state.get("line"):
         print(state["line"])
     else:
