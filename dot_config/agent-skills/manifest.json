@@ -60,6 +60,25 @@
       "skills": [
         "impeccable"
       ]
+    },
+    {
+      "repo": "greensock/gsap-skills",
+      "skills": [
+        "gsap-core",
+        "gsap-timeline",
+        "gsap-scrolltrigger",
+        "gsap-plugins",
+        "gsap-utils",
+        "gsap-performance",
+        "gsap-react",
+        "gsap-frameworks"
+      ]
+    },
+    {
+      "repo": "nolangz/pixel2motion",
+      "skills": [
+        "pixel2motion"
+      ]
     }
   ],
   "npm_setup": [
