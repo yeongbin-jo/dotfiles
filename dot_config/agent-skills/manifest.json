@@ -30,6 +30,24 @@
         "ponytail-help",
         "ponytail-review"
       ]
+    },
+    {
+      "repo": "android/skills",
+      "skills": [
+        "adaptive",
+        "edge-to-edge",
+        "navigation-3",
+        "navigation-event",
+        "jetpack-compose-performance",
+        "r8-analyzer",
+        "anr-audit-and-fix",
+        "agp-9-upgrade",
+        "android-permissions-security",
+        "android-intent-security",
+        "testing-setup",
+        "android-profiler",
+        "play-policy-insights"
+      ]
     }
   ],
   "npm_setup": [
