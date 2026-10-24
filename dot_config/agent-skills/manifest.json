@@ -48,6 +48,18 @@
         "android-profiler",
         "play-policy-insights"
       ]
+    },
+    {
+      "repo": "Nutlope/hallmark",
+      "skills": [
+        "hallmark"
+      ]
+    },
+    {
+      "repo": "pbakaus/impeccable",
+      "skills": [
+        "impeccable"
+      ]
     }
   ],
   "npm_setup": [
