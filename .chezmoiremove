@@ -4,3 +4,7 @@
 # codex 자가 탭 제목 훅 폐기 (2026-09-13) — 탭 제목은 nydus-monitor/`tab-title` 만
 .codex/hooks.json
 .local/bin/codex-tab-title-hook
+
+# 옵시디언 git 백업 폐기 (2026-10-25) — 백업은 LiveSync 서버 스냅샷 하나로 간다
+Library/LaunchAgents/com.yb.obsidian-vault-backup.plist
+.local/bin/obsidian-vault-backup

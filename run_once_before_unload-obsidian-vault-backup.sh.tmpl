@@ -1,0 +1,6 @@
+#!/bin/sh
+# 옵시디언 git 백업 LaunchAgent 폐기 (2026-10-25). 등록돼 있으면 내린다 — plist 파일은 .chezmoiremove 가 지운다.
+{{- if eq .chezmoi.os "darwin" }}
+launchctl bootout "gui/$(id -u)/com.yb.obsidian-vault-backup" >/dev/null 2>&1 || true
+echo "[obsidian-vault-backup] unloaded (retired)"
+{{- end }}
