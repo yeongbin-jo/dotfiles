@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import hashlib
 import json
 import math
@@ -84,25 +86,85 @@ weekly_remaining = None
 if weekly_used is not None:
     weekly_remaining = max(0, min(100, 100 - clamp_percent(weekly_used)))
 
+now = int(time.time())
+resets_at = seven_day.get("resets_at")
+fingerprint = [
+    context_used,
+    context.get("total_input_tokens"),
+    context.get("total_output_tokens"),
+    (data.get("cost") or {}).get("total_cost_usd"),
+    weekly_remaining,
+    resets_at,
+]
+
+root = cache_dir()
+slug = home_slug()
+latest_path = root / f"latest-{slug}.json"
+try:
+    existing_latest = json.loads(latest_path.read_text())
+except Exception:
+    existing_latest = {}
+
+session = data.get("session_id")
+owner = claude_owner() if session else None
+session_path = None
+existing_session = {}
+if session and owner:
+    key = hashlib.sha256((str(config_dir()) + "\0" + session).encode()).hexdigest()[:20]
+    session_path = root / f"session-{key}.json"
+    try:
+        loaded = json.loads(session_path.read_text())
+        if loaded.get("owner_pid") == owner[0] and loaded.get("owner_started") == owner[1]:
+            existing_session = loaded
+    except Exception:
+        existing_session = {}
+
+# refreshInterval=1 calls this script every second on an idle pane with the exact
+# same stdin JSON. Only stamp a new timestamp when the session's payload changed.
+updated_at = now
+if existing_session and existing_session.get("fingerprint") == fingerprint:
+    updated_at = int(existing_session.get("updated_at") or now)
+elif not session and existing_latest.get("fingerprint") == fingerprint:
+    updated_at = int(existing_latest.get("updated_at") or now)
+
 state = {
     "cwd": cwd,
     "context_used_percent": context_used,
     "weekly_remaining_percent": weekly_remaining,
-    "weekly_resets_at": seven_day.get("resets_at"),
-    "updated_at": int(time.time()),
+    "weekly_resets_at": resets_at,
+    "updated_at": updated_at,
+    "fingerprint": fingerprint,
 }
 
-root = cache_dir()
 # Account quota remains compatible with the dashboard's existing reader.
+# Reconcile across panes of the same account: within one reset window remaining
+# quota only decreases, so an idle pane re-rendering an old turn must not
+# overwrite a lower remaining percentage.
+l_rem = existing_latest.get("weekly_remaining_percent")
+l_res = existing_latest.get("weekly_resets_at")
+l_upd = int(existing_latest.get("updated_at") or 0)
 if weekly_remaining is not None:
-    atomic_write(root / f"latest-{home_slug()}.json", state)
-session = data.get("session_id")
-owner = claude_owner() if session else None
-if session and owner:
+    if (l_res == resets_at and isinstance(l_rem, (int, float))
+            and not isinstance(l_rem, bool)):
+        if weekly_remaining > l_rem:
+            state["weekly_remaining_percent"] = int(l_rem)
+            state["updated_at"] = max(updated_at, l_upd)
+            if existing_latest.get("source"):
+                state["source"] = existing_latest["source"]
+        elif weekly_remaining == l_rem and l_upd >= updated_at:
+            state["updated_at"] = l_upd
+            if existing_latest.get("source"):
+                state["source"] = existing_latest["source"]
+    atomic_write(latest_path, state)
+elif l_rem is not None and l_res is not None:
+    state["weekly_remaining_percent"] = int(l_rem)
+    state["weekly_resets_at"] = l_res
+    state["updated_at"] = l_upd or updated_at
+
+if session and owner and session_path is not None:
     state.update(session_id=session, owner_pid=owner[0], owner_started=owner[1])
-    key = hashlib.sha256((str(config_dir()) + "\0" + session).encode()).hexdigest()[:20]
-    atomic_write(root / f"session-{key}.json", state)
-    atomic_write(root / f"owner-{home_slug()}-{owner[0]}.json",
+    atomic_write(session_path, state)
+    atomic_write(root / f"owner-{slug}-{owner[0]}.json",
                  {"session_id": session, "owner_started": owner[1]})
 
 print("")

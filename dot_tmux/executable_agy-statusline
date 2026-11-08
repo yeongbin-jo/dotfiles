@@ -158,17 +158,27 @@ def extract_state(payload: dict) -> dict:
     if not weekly_by_group:
         raise RuntimeError("weekly bucket unavailable")
 
-    _, weekly = next(
-        (item for item in weekly_by_group if PREFERRED_GROUP in item[0]),
-        weekly_by_group[0],
-    )
-    fraction = weekly.get("remaining_fraction")
-    resets_at = parse_reset(weekly.get("reset_time"))
-    if (isinstance(fraction, bool) or not isinstance(fraction, (int, float))
-            or not math.isfinite(fraction) or not 0 <= fraction <= 1 or resets_at is None):
+    preferred = [item for item in weekly_by_group if PREFERRED_GROUP in item[0]]
+    candidates = preferred or weekly_by_group
+    valid: list[tuple[str, float, int]] = []
+    for group_name, bucket in candidates:
+        fraction = bucket.get("remaining_fraction")
+        resets_at = parse_reset(bucket.get("reset_time"))
+        if (isinstance(fraction, bool) or not isinstance(fraction, (int, float))
+                or not math.isfinite(fraction) or not 0 <= fraction <= 1 or resets_at is None):
+            continue
+        valid.append((group_name, float(fraction), resets_at))
+    if not valid:
         raise RuntimeError("weekly bucket incomplete")
+
+    # Pro plans split Gemini into "Gemini Models" (Flash/Pro) and "Gemini 4 Argon".
+    # Pick the most constrained Gemini weekly bucket (preferring Argon on ties).
+    _, fraction, resets_at = min(
+        valid,
+        key=lambda item: (item[1], "Argon" not in item[0]),
+    )
     return {
-        "remaining_percent": round(max(0.0, min(1.0, float(fraction))) * 100),
+        "remaining_percent": round(max(0.0, min(1.0, fraction)) * 100),
         "resets_at": resets_at,
         "fetched_at": int(time.time()),
         "error": None,

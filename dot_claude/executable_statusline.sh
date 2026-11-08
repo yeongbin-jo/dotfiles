@@ -80,9 +80,21 @@ def bar(remaining, width=14):   # 잔여율 게이지 — 퍼센트 텍스트를
 right_s = ""
 sd = (d.get("rate_limits") or {}).get("seven_day") or {}
 up = sd.get("used_percentage")
-if up is not None:
-    remaining = max(0, min(100, 100 - round(up)))
-    ra = sd.get("resets_at")
+ra = sd.get("resets_at")
+remaining = max(0, min(100, 100 - round(up))) if up is not None else None
+try:
+    import hashlib
+    from pathlib import Path
+    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")).resolve()
+    slug = hashlib.sha1(str(cfg).encode("utf-8")).hexdigest()[:12]
+    latest = json.loads((Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline" / f"latest-{slug}.json").read_text())
+    l_rem, l_ra = latest.get("weekly_remaining_percent"), latest.get("weekly_resets_at")
+    if l_rem is not None and l_ra and l_ra > time.time():
+        if remaining is None or (ra == l_ra and l_rem < remaining):
+            remaining, ra = int(l_rem), l_ra
+except Exception:
+    pass
+if remaining is not None:
     timer = "\U0001F5D3\uFE0F " + (fmt_countdown(int(ra - time.time())) if ra else "?")
     right_s = c("38;5;250", timer) + "  " + bar(remaining)
 

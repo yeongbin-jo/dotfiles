@@ -452,9 +452,23 @@ def rollout_for_pid(codex_pid: int | None, started: str = "") -> str | None:
             return saved["path"]
     except (OSError, ValueError, KeyError, TypeError):
         pass
+    pids = [codex_pid]
+    if _processes:
+        children: dict[int, list[int]] = {}
+        for row in _processes.values():
+            children.setdefault(row["ppid"], []).append(row["pid"])
+        pending, seen = deque([codex_pid]), set()
+        while pending:
+            cur = pending.popleft()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            for child in children.get(cur, []):
+                pids.append(child)
+                pending.append(child)
     try:
         listing = subprocess.run(
-            [LSOF, "-p", str(codex_pid), "-Fn"],
+            [LSOF, "-p", ",".join(str(p) for p in pids), "-Fn"],
             capture_output=True, text=True, timeout=0.4, check=False,
         ).stdout
     except Exception:
@@ -654,21 +668,42 @@ def latest_context_state(cwd: str | None, rollout: str | None = None) -> dict | 
 
 def latest_claude_state(owner: dict) -> dict | None:
     root = Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline"
-    path = root / f"owner-{home_slug(ACTIVE_CLAUDE_CONFIG_DIR)}-{owner['pid']}.json"
+    slug = home_slug(ACTIVE_CLAUDE_CONFIG_DIR)
+    path = root / f"owner-{slug}-{owner['pid']}.json"
+    state = None
     try:
         binding = json.loads(path.read_text())
         session = binding.get("session_id")
         if not session or binding.get("owner_started") != owner["started"]:
             return None
         key = hashlib.sha256((str(ACTIVE_CLAUDE_CONFIG_DIR.resolve()) + "\0" + session).encode()).hexdigest()[:20]
-        state = json.loads((root / f"session-{key}.json").read_text())
-        if (state.get("owner_pid") == owner["pid"] and state.get("owner_started") == owner["started"]
-                and state.get("session_id") == session
-                and time.time() - int(state.get("updated_at") or 0) <= CACHE_TTL_SECONDS * 10):
-            return state
+        candidate = json.loads((root / f"session-{key}.json").read_text())
+        if (candidate.get("owner_pid") == owner["pid"] and candidate.get("owner_started") == owner["started"]
+                and candidate.get("session_id") == session):
+            state = dict(candidate)
     except (OSError, ValueError, TypeError):
-        pass
-    return None
+        return None
+    if state is None:
+        return None
+    try:
+        latest = json.loads((root / f"latest-{slug}.json").read_text())
+    except (OSError, ValueError, TypeError):
+        latest = {}
+    l_rem = latest.get("weekly_remaining_percent")
+    l_res = latest.get("weekly_resets_at")
+    l_upd = int(latest.get("updated_at") or 0)
+    s_rem = state.get("weekly_remaining_percent")
+    s_res = state.get("weekly_resets_at")
+    s_upd = int(state.get("updated_at") or 0)
+    if l_rem is not None and l_res is not None:
+        if s_rem is None or (s_res != l_res and l_upd >= s_upd):
+            state["weekly_remaining_percent"] = l_rem
+            state["weekly_resets_at"] = l_res
+            state["updated_at"] = max(s_upd, l_upd)
+        elif s_res == l_res:
+            state["weekly_remaining_percent"] = min(s_rem, l_rem)
+            state["updated_at"] = max(s_upd, l_upd)
+    return state
 
 
 def codex_account_label(codex_home: Path) -> str:
@@ -711,7 +746,8 @@ def render_line(product: str, state: dict, context_used: int | None, columns: in
            else tmux_style("fg=#727169", "—"))
         + (tmux_style("fg=#7aa89f", f" {account}") if account else "")
     )
-    if seconds <= 0 or not fetched_at or time.time() - fetched_at > CACHE_TTL_SECONDS * 10:
+    stale_ttl = CACHE_TTL_SECONDS * 20 if product == "CLAUDE" else CACHE_TTL_SECONDS * 10
+    if seconds <= 0 or not fetched_at or time.time() - fetched_at > stale_ttl:
         right = tmux_style("fg=#e6c384", "WEEKLY — 관측 오래됨")
     else:
         right = (tmux_style("fg=#dcd7ba", "WEEKLY RESET ")

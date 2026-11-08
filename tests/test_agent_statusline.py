@@ -147,6 +147,38 @@ class StatuslineTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(RuntimeError):
                 self.a['extract_state']({'command': {'data': {'groups': [{'name': 'Gemini', 'buckets': [
                     {'window': 'weekly', 'remaining_fraction': value, 'reset_time': '2030-01-01T00:00:00Z'}]}]}}})
+        state = self.a['extract_state']({'command': {'data': {'groups': [
+            {'name': 'Gemini Models', 'buckets': [
+                {'window': 'weekly', 'remaining_fraction': 0.98, 'reset_time': '2030-01-01T00:00:00Z'}]},
+            {'name': 'Claude and GPT models', 'buckets': [
+                {'window': 'weekly', 'remaining_fraction': 0.10, 'reset_time': '2030-01-01T00:00:00Z'}]},
+            {'name': 'Gemini 4 Argon', 'buckets': [
+                {'window': 'weekly', 'remaining_fraction': 0.77, 'reset_time': '2030-01-01T00:00:00Z'}]},
+        ]}}})
+        self.assertEqual(state['remaining_percent'], 77)
+
+    def test_claude_weekly_quota_reconciles_across_panes_of_same_home(self):
+        writer = ROOT / 'dot_claude/executable_tmux-status-cache.py'
+        home = Path(self.tmp.name) / 'claude-shared'
+        reset = self.now + 3600
+        def write(pid, sid, ctx_used, weekly_used):
+            payload = dict(session_id=sid, cwd='/dir', context_window=dict(used_percentage=ctx_used),
+                           rate_limits=dict(seven_day=dict(used_percentage=weekly_used, resets_at=reset)))
+            result = subprocess.CompletedProcess([], 0, f'{pid} 1 Wed Oct 21 12:00:00 2026 claude\n')
+            with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(home), STATUSLINE_OWNER_PID=str(pid)), \
+                 patch.object(subprocess, 'run', return_value=result), \
+                 patch.object(sys, 'stdin', io.StringIO(json.dumps(payload))), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                runpy.run_path(str(writer))
+        write(201, 'fresh-pane', 44, 43)  # 57% remaining
+        write(202, 'idle-pane', 14, 40)   # 60% remaining (stale in-memory rate limit)
+        with patch.dict(self.g, ACTIVE_CLAUDE_CONFIG_DIR=home):
+            s1 = self.g['latest_claude_state'](dict(pid=201, started='Wed Oct 21 12:00:00 2026'))
+            s2 = self.g['latest_claude_state'](dict(pid=202, started='Wed Oct 21 12:00:00 2026'))
+            self.assertEqual(s1['context_used_percent'], 44)
+            self.assertEqual(s2['context_used_percent'], 14)
+            self.assertEqual(s1['weekly_remaining_percent'], 57)
+            self.assertEqual(s2['weekly_remaining_percent'], 57)
 
     def test_idle_pane_cache_invalidates_on_command_change(self):
         with patch.dict(self.g, process_snapshot=unittest.mock.Mock(return_value={})) as scope:
