@@ -7,7 +7,8 @@
   Claude 홈이 여럿이면(~/.claude, ~/.claude-*, ~/.claude2 …) 홈마다 MCP 등록을 맞춘다.
 - 실제 파일은 ~/.agents/skills 한 벌. 공유 심링크가 아닌 Claude 홈의 skills 디렉터리에는 심링크를 건다.
 - 목록에서 빠진 스킬은 지운다 — 잠금 파일에 그 github 저장소에서 받았다고 적힌 것만(손으로 깐 스킬 · 목록에서
-  저장소째 빠진 스킬은 건드리지 않는다). `npx skills remove` 로 지우고, 다른 Claude 홈에 남은 끊긴 심링크도 걷는다.
+  저장소째 빠진 스킬은 건드리지 않는다). `npx skills remove` 로 지운다.
+- 다른 Claude 홈에 남은, ~/.agents/skills 를 가리키다 끊긴 심링크는 걷는다(대상이 사라진 스킬).
 
 launchd(com.yb.agent-skills-update)가 하루 한 번 돌린다. 손으로: `agent-skills-update [--dry-run]`.
 로그 ~/Library/Logs/agent-skills-update.log · 상태 ~/.local/state/agent-skills/state.json
@@ -110,13 +111,18 @@ def prune_github(entry, env):
     log(f"{repo}: 목록에서 빠진 스킬 지움 — {', '.join(gone)}")
     if run(["npx", "-y", "skills", "remove", "-g", "-y", *gone], {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}):
         log(f"{repo}: 지우기 실패 — 다음 회차에 다시")
-        return
-    # 다른 Claude 홈의 심링크(link_into_homes 가 건 것)는 skills CLI 가 모른다 — 끊긴 것만 걷는다.
+
+
+def sweep_dead_links():
+    """다른 Claude 홈의 심링크(link_into_homes 가 건 것)는 skills CLI 가 모른다 — ~/.agents/skills 를 가리키다 끊긴 것만 걷는다."""
+    root = os.path.realpath(AGENTS_SKILLS) + os.sep
     for home in claude_homes()[1:]:
-        for n in gone:
-            dst = os.path.join(home, "skills", n)
-            if os.path.islink(dst) and not os.path.exists(dst) \
-                    and os.path.realpath(dst).startswith(os.path.realpath(AGENTS_SKILLS) + os.sep):
+        sd = os.path.join(home, "skills")
+        if os.path.islink(sd) or not os.path.isdir(sd):
+            continue
+        for n in sorted(os.listdir(sd)):
+            dst = os.path.join(sd, n)
+            if os.path.islink(dst) and not os.path.exists(dst) and os.path.realpath(dst).startswith(root):
                 log(f"unlink {dst}")
                 if not DRY:
                     os.unlink(dst)
@@ -231,6 +237,7 @@ def main():
         except Exception as ex:  # 한 소스 실패가 다른 소스를 막지 않는다
             fails += 1
             log(f"{e.get('repo')}: 오류 {ex!r}")
+    sweep_dead_links()
     for e in man.get("npm_setup", []):
         try:
             update_npm(e, cutoff, state, env)
