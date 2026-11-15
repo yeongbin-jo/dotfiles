@@ -6,6 +6,8 @@
 - npm_setup 패키지(rea-agents 등): cooldown_days 이전에 나온 마지막 정식 판으로 `setup` 을 돌린다.
   Claude 홈이 여럿이면(~/.claude, ~/.claude-*, ~/.claude2 …) 홈마다 MCP 등록을 맞춘다.
 - 실제 파일은 ~/.agents/skills 한 벌. 공유 심링크가 아닌 Claude 홈의 skills 디렉터리에는 심링크를 건다.
+- 목록에서 빠진 스킬은 지운다 — 잠금 파일에 그 github 저장소에서 받았다고 적힌 것만(손으로 깐 스킬 · 목록에서
+  저장소째 빠진 스킬은 건드리지 않는다). `npx skills remove` 로 지우고, 다른 Claude 홈에 남은 끊긴 심링크도 걷는다.
 
 launchd(com.yb.agent-skills-update)가 하루 한 번 돌린다. 손으로: `agent-skills-update [--dry-run]`.
 로그 ~/Library/Logs/agent-skills-update.log · 상태 ~/.local/state/agent-skills/state.json
@@ -95,6 +97,29 @@ def link_into_homes(names):
                 log(f"link {dst} -> {src}")
                 if not DRY:
                     os.symlink(src, dst)
+
+
+def prune_github(entry, env):
+    """목록에서 빠진 스킬 — 잠금 파일에 이 저장소 출처로 적힌 것만 지운다."""
+    repo, keep = entry["repo"], set(entry["skills"])
+    lock = load(LOCK, {}).get("skills", {})
+    gone = sorted(k for k, v in lock.items()
+                  if k not in keep and (v.get("source") == repo or (v.get("sourceUrl") or "").rstrip("/").removesuffix(".git").endswith("/" + repo)))
+    if not gone:
+        return
+    log(f"{repo}: 목록에서 빠진 스킬 지움 — {', '.join(gone)}")
+    if run(["npx", "-y", "skills", "remove", "-g", "-y", *gone], {k: v for k, v in env.items() if k != "CLAUDE_CONFIG_DIR"}):
+        log(f"{repo}: 지우기 실패 — 다음 회차에 다시")
+        return
+    # 다른 Claude 홈의 심링크(link_into_homes 가 건 것)는 skills CLI 가 모른다 — 끊긴 것만 걷는다.
+    for home in claude_homes()[1:]:
+        for n in gone:
+            dst = os.path.join(home, "skills", n)
+            if os.path.islink(dst) and not os.path.exists(dst) \
+                    and os.path.realpath(dst).startswith(os.path.realpath(AGENTS_SKILLS) + os.sep):
+                log(f"unlink {dst}")
+                if not DRY:
+                    os.unlink(dst)
 
 
 def update_github(entry, cutoff, state, env):
@@ -201,6 +226,7 @@ def main():
     fails = 0
     for e in man.get("github", []):
         try:
+            prune_github(e, env)
             update_github(e, cutoff, state, env)
         except Exception as ex:  # 한 소스 실패가 다른 소스를 막지 않는다
             fails += 1
