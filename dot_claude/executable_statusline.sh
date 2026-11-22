@@ -90,7 +90,9 @@ try:
     latest = json.loads((Path(os.environ.get("TMPDIR") or "/tmp") / "claude-tmux-statusline" / f"latest-{slug}.json").read_text())
     l_rem, l_ra = latest.get("weekly_remaining_percent"), latest.get("weekly_resets_at")
     if l_rem is not None and l_ra and l_ra > time.time():
-        if remaining is None or (ra == l_ra and l_rem < remaining):
+        # latest 는 tmux-status-cache 가 관측 시각으로 정리한 계정 값 — 같은 창이면 그대로 따른다
+        # (초기화권은 resets_at 그대로 잔여를 되채우므로 "작은 값 우선" 은 0% 에 갇힌다)
+        if remaining is None or ra == l_ra:
             remaining, ra = int(l_rem), l_ra
 except Exception:
     pass

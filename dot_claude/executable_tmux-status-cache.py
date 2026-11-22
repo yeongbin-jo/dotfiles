@@ -122,8 +122,10 @@ if session and owner:
 # refreshInterval=1 calls this script every second on an idle pane with the exact
 # same stdin JSON. Only stamp a new timestamp when the session's payload changed.
 updated_at = now
+# observed_at is this pane's own observation time; updated_at may be borrowed
+# from a newer account-wide value below, so it must not feed back in here.
 if existing_session and existing_session.get("fingerprint") == fingerprint:
-    updated_at = int(existing_session.get("updated_at") or now)
+    updated_at = int(existing_session.get("observed_at") or existing_session.get("updated_at") or now)
 elif not session and existing_latest.get("fingerprint") == fingerprint:
     updated_at = int(existing_latest.get("updated_at") or now)
 
@@ -133,28 +135,28 @@ state = {
     "weekly_remaining_percent": weekly_remaining,
     "weekly_resets_at": resets_at,
     "updated_at": updated_at,
+    "observed_at": updated_at,
     "fingerprint": fingerprint,
 }
 
 # Account quota remains compatible with the dashboard's existing reader.
-# Reconcile across panes of the same account: within one reset window remaining
-# quota only decreases, so an idle pane re-rendering an old turn must not
-# overwrite a lower remaining percentage.
+# Reconcile across panes of the same account by observation time: an idle pane
+# keeps re-rendering its last turn every second with a frozen updated_at, so it
+# must not overwrite a newer observation from another pane or the probe.
+# Remaining quota is NOT monotonic within one reset window -- a weekly-limit
+# reset ticket refills it while resets_at stays the same -- so a newer, higher
+# value wins. Only same-second ties fall back to the lower value.
 l_rem = existing_latest.get("weekly_remaining_percent")
 l_res = existing_latest.get("weekly_resets_at")
 l_upd = int(existing_latest.get("updated_at") or 0)
 if weekly_remaining is not None:
     if (l_res == resets_at and isinstance(l_rem, (int, float))
-            and not isinstance(l_rem, bool)):
-        if weekly_remaining > l_rem:
-            state["weekly_remaining_percent"] = int(l_rem)
-            state["updated_at"] = max(updated_at, l_upd)
-            if existing_latest.get("source"):
-                state["source"] = existing_latest["source"]
-        elif weekly_remaining == l_rem and l_upd >= updated_at:
-            state["updated_at"] = l_upd
-            if existing_latest.get("source"):
-                state["source"] = existing_latest["source"]
+            and not isinstance(l_rem, bool)
+            and (updated_at < l_upd or (updated_at == l_upd and l_rem <= weekly_remaining))):
+        state["weekly_remaining_percent"] = int(l_rem)
+        state["updated_at"] = l_upd
+        if existing_latest.get("source"):
+            state["source"] = existing_latest["source"]
     atomic_write(latest_path, state)
 elif l_rem is not None and l_res is not None:
     state["weekly_remaining_percent"] = int(l_rem)

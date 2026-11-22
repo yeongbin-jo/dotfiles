@@ -701,7 +701,12 @@ def latest_claude_state(owner: dict) -> dict | None:
             state["weekly_resets_at"] = l_res
             state["updated_at"] = max(s_upd, l_upd)
         elif s_res == l_res:
-            state["weekly_remaining_percent"] = min(s_rem, l_rem)
+            # Newer observation wins: a reset ticket refills quota without moving
+            # resets_at, so remaining is not monotonic. Ties take the lower value.
+            if l_upd > s_upd:
+                state["weekly_remaining_percent"] = l_rem
+            elif l_upd == s_upd:
+                state["weekly_remaining_percent"] = min(s_rem, l_rem)
             state["updated_at"] = max(s_upd, l_upd)
     return state
 

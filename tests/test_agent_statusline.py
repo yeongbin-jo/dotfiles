@@ -180,6 +180,34 @@ class StatuslineTests(unittest.TestCase):
             self.assertEqual(s1['weekly_remaining_percent'], 57)
             self.assertEqual(s2['weekly_remaining_percent'], 57)
 
+    def test_claude_weekly_reset_ticket_refill_wins_over_idle_pane(self):
+        # A weekly-limit reset ticket refills quota but keeps resets_at, so a newer
+        # higher value must win over an idle pane still showing the old 0%.
+        writer = ROOT / 'dot_claude/executable_tmux-status-cache.py'
+        home = Path(self.tmp.name) / 'claude-ticket'
+        reset = self.now + 3 * 86400
+        def write(pid, sid, ctx_used, weekly_used, at):
+            payload = dict(session_id=sid, cwd='/dir', context_window=dict(used_percentage=ctx_used),
+                           rate_limits=dict(seven_day=dict(used_percentage=weekly_used, resets_at=reset)))
+            result = subprocess.CompletedProcess([], 0, f'{pid} 1 Wed Oct 21 12:00:00 2026 claude\n')
+            with patch.dict(os.environ, CLAUDE_CONFIG_DIR=str(home), STATUSLINE_OWNER_PID=str(pid)), \
+                 patch.object(subprocess, 'run', return_value=result), \
+                 patch.object(time, 'time', return_value=at), \
+                 patch.object(sys, 'stdin', io.StringIO(json.dumps(payload))), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                runpy.run_path(str(writer))
+        t = self.now - 600
+        write(301, 'old-pane', 20, 100, t)        # exhausted before the ticket
+        write(302, 'fresh-pane', 30, 3, t + 60)   # ticket used: 97% remaining
+        for k in range(1, 4):                     # idle pane re-renders its frozen turn
+            write(301, 'old-pane', 20, 100, t + 60 + k)
+        latest = json.loads(next((Path(self.tmp.name) / 'claude-tmux-statusline').glob('latest-*.json')).read_text())
+        self.assertEqual(latest['weekly_remaining_percent'], 97)
+        with patch.dict(self.g, ACTIVE_CLAUDE_CONFIG_DIR=home):
+            for pid in (301, 302):
+                s = self.g['latest_claude_state'](dict(pid=pid, started='Wed Oct 21 12:00:00 2026'))
+                self.assertEqual(s['weekly_remaining_percent'], 97)
+
     def test_idle_pane_cache_invalidates_on_command_change(self):
         with patch.dict(self.g, process_snapshot=unittest.mock.Mock(return_value={})) as scope:
             self.assertIsNone(self.g['owner_for_pane'](123, 'zsh'))
