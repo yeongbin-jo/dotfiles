@@ -6,6 +6,7 @@
 # mouse-scaling: 5
 # key-repeat: initial 10, interval 1
 # input-toggle: CapsLock -> F19 (Karabiner) -> "Select the previous input source" = 한/영 전환
+# input-indicator: off (Sonoma+ 입력 소스 팝업이 한/영 전환을 늦춤)
 set -e
 
 {{- if eq .chezmoi.os "darwin" }}
@@ -18,9 +19,13 @@ defaults write com.apple.screensaver askForPasswordDelay -int 0
 # 한/영 전환: Karabiner maps CapsLock->F19; here we bind macOS "Select the previous input
 # source" (symbolic hotkey 60) to F19 (virtual keycode 80, no modifier). Toggles EN<->KO.
 defaults write com.apple.symbolichotkeys AppleSymbolicHotKeys -dict-add 60 "<dict><key>enabled</key><true/><key>value</key><dict><key>type</key><string>standard</string><key>parameters</key><array><integer>65535</integer><integer>80</integer><integer>0</integer></array></dict></dict>"
+# Sonoma+ 는 입력 소스를 바꿀 때마다 커서 옆에 표시 팝업을 띄우는데, 이게 CapsLock 한/영 전환을
+# 체감상 늦게 만든다. 팝업을 끄면 전환이 바로 먹는다.
+defaults write kCFPreferencesAnyApplication TSMLanguageIndicatorEnabled -bool false
+killall TextInputMenuAgent >/dev/null 2>&1 || true
 killall cfprefsd >/dev/null 2>&1 || true
 /System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings -u >/dev/null 2>&1 || true
-echo "[macos-input] mouse 5; key repeat 10/1; natural scroll off; lock immediate; input-source toggle -> F19 (CapsLock)"
+echo "[macos-input] mouse 5; key repeat 10/1; natural scroll off; lock immediate; input-source toggle -> F19 (CapsLock); input indicator off"
 {{- else }}
 echo "[macos-input] skipped on non-darwin"
 {{- end }}
