@@ -40,7 +40,10 @@ def ctx_seg(used, width=14):   # 컨텍스트 사용량 바 — 우측 잔여량
             "\x1b[48;5;237;38;5;250m%s\x1b[0m" % txt[filled:] +
             "\x1b[38;5;245m]\x1b[0m")
 
-left = [c("38;5;75", model), c("38;5;252", base)]
+# effort 는 세션 JSON 의 effort.level (low/medium/high/xhigh/max). 없으면 모델명만.
+effort = (d.get("effort") or {}).get("level")
+model_s = c("38;5;75", model) + (c("38;5;245", " (%s)" % effort) if effort else "")
+left = [model_s, c("38;5;252", base)]
 if branch:
     left.append(c("38;5;114", "⎇ " + branch))
 # 자율 루프 표시 — ~/.claude/loop-state/<session_id>.json 이 가리키는 컨트롤 노트에서 읽는다.
