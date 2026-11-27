@@ -9,6 +9,9 @@ set -g default-terminal "tmux-256color"
 # Reserved indices keep config reloads idempotent. Ghostty supports atomic screen updates.
 set -s terminal-features[10] "*:cstyle"
 set -s terminal-features[11] "xterm-ghostty:RGB:sync"
+# 링크(OSC 8)를 바깥 터미널로 넘긴다: ssh 로 붙은 Ghostty(xterm-256color)에서 Shift+Cmd+클릭하면 그 Mac 에서 열린다
+set -s terminal-features[12] "xterm-ghostty:hyperlinks"
+set -s terminal-features[13] "xterm-256color:hyperlinks"
 
 # ── sane defaults (tmux-sensible 핵심 인라인) ──
 set -sg escape-time 0           # vi ESC 지연 제거
